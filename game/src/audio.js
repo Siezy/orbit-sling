@@ -9,6 +9,10 @@ export function createAudio() {
   let master = null;
   let muted = false;
   let pad = null;
+  let engineOsc = null;
+  let engineGain = null;
+  let engineNoise = null;
+  let engineNoiseGain = null;
 
   function ensure() {
     if (ctx) return ctx;
@@ -107,9 +111,65 @@ export function createAudio() {
     click() {
       tone(660, 0.07, 'square', 0.12);
     },
+    /** Engine roar for the takeoff roll: rising noise + a climbing tone. */
+    takeoff() {
+      noise(0.7, 0.4, 900, 3200);
+      tone(140, 0.6, 'sawtooth', 0.16, 420);
+      this.engine(true, 0.4);
+    },
     launch() {
       noise(0.5, 0.35, 2400, 300);
       tone(220, 0.4, 'sine', 0.25, 880);
+    },
+    /** The engine drone: a low sawtooth + wind noise whose pitch and level
+     * follow the plane's speed (0..1). Call with (false) to stop it. */
+    engine(on, speed01) {
+      if (!ensure()) return;
+      try {
+        if (!on) {
+          if (engineGain) engineGain.gain.setTargetAtTime(0, ctx.currentTime, 0.05);
+          if (engineNoiseGain) engineNoiseGain.gain.setTargetAtTime(0, ctx.currentTime, 0.05);
+          return;
+        }
+        if (!engineOsc) {
+          engineOsc = ctx.createOscillator();
+          engineOsc.type = 'sawtooth';
+          engineOsc.frequency.value = 70;
+          engineGain = ctx.createGain();
+          engineGain.gain.value = 0;
+          engineOsc.connect(engineGain);
+          engineGain.connect(master);
+          engineOsc.start();
+          engineNoise = ctx.createBufferSource();
+          engineNoise.buffer = noiseBuffer(1.5);
+          engineNoise.loop = true;
+          const filter = ctx.createBiquadFilter();
+          filter.type = 'bandpass';
+          filter.frequency.value = 700;
+          filter.Q.value = 0.6;
+          engineNoiseGain = ctx.createGain();
+          engineNoiseGain.gain.value = 0;
+          engineNoise.connect(filter);
+          filter.connect(engineNoiseGain);
+          engineNoiseGain.connect(master);
+          engineNoise.start();
+        }
+        const s = Math.max(0, Math.min(1, speed01));
+        engineOsc.frequency.setTargetAtTime(55 + s * 75, ctx.currentTime, 0.1);
+        engineGain.gain.setTargetAtTime(muted ? 0 : 0.045 + s * 0.05, ctx.currentTime, 0.1);
+        engineNoiseGain.gain.setTargetAtTime(muted ? 0 : s * 0.05, ctx.currentTime, 0.1);
+      } catch {
+        // Silence on any audio failure.
+      }
+    },
+    /** Touchdown: a soft thud plus a bright landing chime. */
+    land() {
+      noise(0.25, 0.4, 500, 120);
+      tone(160, 0.2, 'sine', 0.35, 70);
+      [784, 1047, 1319].forEach((freq, i) => {
+        setTimeout(() => tone(freq, 0.22, 'triangle', 0.22), 90 + i * 100);
+      });
+      this.engine(false);
     },
     pickup(combo) {
       const step = Math.min(combo, 8);
@@ -128,9 +188,21 @@ export function createAudio() {
     graze() {
       tone(1240, 0.09, 'triangle', 0.2, 1560);
     },
+    /** A soft thud for bouncing off the strip (too fast, or stars remain). */
+    bounce() {
+      tone(120, 0.15, 'sine', 0.3, 60);
+      noise(0.12, 0.2, 600, 200);
+    },
+    /** A bird strike: a squawk-ish chirp over a thud. */
+    birdHit() {
+      tone(900, 0.08, 'square', 0.14, 500);
+      tone(500, 0.1, 'square', 0.12, 300);
+      noise(0.15, 0.25, 700, 200);
+    },
     crash() {
       noise(0.5, 0.5, 900, 120);
       tone(90, 0.5, 'sine', 0.4, 40);
+      this.engine(false);
     },
     levelClear() {
       [523, 659, 784, 1047].forEach((freq, i) => {
@@ -141,6 +213,7 @@ export function createAudio() {
       [392, 330, 262, 196].forEach((freq, i) => {
         setTimeout(() => tone(freq, 0.3, 'triangle', 0.22), i * 160);
       });
+      this.engine(false);
     },
   };
 }

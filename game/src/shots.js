@@ -2,11 +2,12 @@
 // Each builds a fixed view of the game — same seed, same pixels — paints it
 // twice and sets window.__shotReady, so a screenshot tool knows the frame
 // is settled. The scenes are real states of the game's own code: the title
-// screen, a ship mid-flight, a planet graze, and the game-over screen.
+// screen over the runway, a plane mid-flight racing a rival, the landing
+// approach onto the strip, and the race-over screen.
 
 import { SHIP } from './config.js';
 import { createRandom } from './random.js';
-import { generateLevel } from './levels.js';
+import { FLIGHT_START, generateLevel } from './levels.js';
 import { simulateFlight } from './physics.js';
 
 const TIME = 0.52;
@@ -24,12 +25,28 @@ function baseView(level, seed) {
     levelIndex: level.level,
     starsLeft: level.stars.length,
     aim: null,
+    power: null,
     trajectory: null,
     shake: 0,
     time: TIME,
     muted: false,
     clearBonus: 0,
+    clearBreakdown: '',
     newBest: false,
+    won: false,
+    shield: false,
+    magnetLeft: 0,
+    hint: null,
+    takeoffT: null,
+    takeoffPower: null,
+    stripArmed: false,
+    rivals: [],
+    raceRank: 2,
+    raceOrder: [
+      { name: 'REX', color: '#ff7a3c', progress: 30, isPlayer: false },
+      { name: 'YOU', color: '#ffffff', progress: 20, isPlayer: true },
+      { name: 'MAYA', color: '#b678ff', progress: 10, isPlayer: false },
+    ],
   };
 }
 
@@ -52,13 +69,39 @@ function sparkles(rng, x, y, color, count) {
   return out;
 }
 
+/** Rival markers for a scene: REX partway along its first planned flight,
+ * MAYA still on the runway (or parked, when told). */
+function sceneRivals(level, rexAt, mayaAt) {
+  const rivals = [];
+  const plan0 = level.rivals[0];
+  if (rexAt != null && plan0.paths.length > 0) {
+    const path = plan0.paths[0];
+    const idx = Math.min(Math.floor(path.points.length * rexAt), path.points.length - 1);
+    const pt = path.points[idx];
+    const next = path.points[Math.min(idx + 1, path.points.length - 1)];
+    rivals.push({
+      name: 'REX', color: '#ff7a3c', x: pt.x, y: pt.y,
+      angle: Math.atan2(next.y - pt.y, next.x - pt.x), visible: true, phase: 'fly',
+    });
+  } else {
+    rivals.push({ name: 'REX', color: '#ff7a3c', x: level.start.x + 46, y: level.start.y, angle: 0, visible: true, phase: 'aim' });
+  }
+  if (mayaAt != null) {
+    rivals.push({ name: 'MAYA', color: '#b678ff', x: mayaAt.x, y: mayaAt.y, angle: mayaAt.angle ?? 0, visible: true, phase: mayaAt.phase ?? 'aim' });
+  } else {
+    rivals.push({ name: 'MAYA', color: '#b678ff', x: level.start.x + 86, y: level.start.y, angle: 0, visible: true, phase: 'aim' });
+  }
+  return rivals;
+}
+
 function shotStart(seed) {
   const rng = createRandom(seed);
   const level = generateLevel(rng, 1);
   const view = baseView(level, seed);
   view.screen = 'title';
   view.best = 1250;
-  view.ship = { x: level.start.x, y: level.start.y, vx: 0, vy: 0, angle: -0.5 };
+  view.ship = { x: level.start.x, y: level.start.y, vx: 0, vy: 0, angle: 0 };
+  view.rivals = sceneRivals(level, null, null);
   return view;
 }
 
@@ -70,27 +113,29 @@ function shotPlay(seed) {
   view.score = 350;
   view.best = 1250;
   view.lives = 2;
-  // A fixed launch, flown forward: search for the most dramatic slingshot
-  // moment — the ship CLOSE to a planet, the arc bending hard around it, a
-  // star sitting on the arc ahead, the ship near the middle of the frame.
-  // A thumbnail must read at a glance: planet + bent arc + star, not a long
+  view.shield = true;
+  view.raceRank = 2;
+  // A fixed takeoff, flown forward: search for the most dramatic racing
+  // moment — the plane CLOSE to a vortex, the arc bending hard around it, a
+  // star sitting on the arc ahead, the plane near the middle of the frame.
+  // A thumbnail must read at a glance: plane + bent arc + star, not a long
   // thin line across an empty field.
   const candidates = [];
   for (const angle of [-0.5, -0.3, -0.1, 0.15]) {
     for (const power of [0.6, 0.75, 0.9]) {
       const vx = Math.cos(angle) * power * SHIP.maxSpeed;
       const vy = Math.sin(angle) * power * SHIP.maxSpeed;
-      const path = simulateFlight(level, level.start.x, level.start.y, vx, vy, 150);
+      const { points: path } = simulateFlight(level, FLIGHT_START.x, FLIGHT_START.y, vx, vy, 150, 0, true);
       for (let i = 25; i < Math.min(110, path.length - 45); i += 1) {
         let ahead = 0;
         for (let j = i; j < path.length; j += 1) {
           if (path[j].x < 0 || path[j].x > 1280 || path[j].y < 0 || path[j].y > 720) break;
           ahead += 1;
         }
-        // How close is the ship to a planet here (slingshot moment)?
-        let nearPlanet = 1e9;
-        for (const p of level.planets) {
-          nearPlanet = Math.min(nearPlanet, Math.hypot(path[i].x - p.x, path[i].y - p.y) - p.r);
+        // How close is the plane to a vortex here (slingshot moment)?
+        let nearVortex = 1e9;
+        for (const p of level.vortexes) {
+          nearVortex = Math.min(nearVortex, Math.hypot(path[i].x - p.x, path[i].y - p.y) - p.r);
         }
         // How hard does the arc bend ahead? (direction change over 40 steps)
         const v1x = path[i + 1].x - path[i].x;
@@ -108,7 +153,7 @@ function shotPlay(seed) {
           if (starNear) break;
         }
         const d = Math.hypot(path[i].x - 640, path[i].y - 360);
-        const closeBonus = nearPlanet > 15 && nearPlanet < 120 ? 200 : -Math.abs(nearPlanet - 60);
+        const closeBonus = nearVortex > 15 && nearVortex < 120 ? 200 : -Math.abs(nearVortex - 60);
         const score = bend * 300 + closeBonus + starNear * 150 + ahead * 1.5 - d / 25;
         candidates.push({ path, i, score });
       }
@@ -121,13 +166,14 @@ function shotPlay(seed) {
   const flightVx = (at.x - prev.x) / (1 / 60);
   const flightVy = (at.y - prev.y) / (1 / 60);
   view.ship = { x: at.x, y: at.y, vx: flightVx, vy: flightVy, angle: Math.atan2(flightVy, flightVx) };
-  view.trajectory = simulateFlight(level, at.x, at.y, flightVx, flightVy, 150);
+  view.trajectory = simulateFlight(level, at.x, at.y, flightVx, flightVy, 150, 0, true).points;
   // One star already collected, its sparkles frozen mid-burst.
   const taken = level.stars[0];
   taken.taken = true;
   view.starsLeft = level.stars.filter((s) => !s.taken).length;
   view.particles = sparkles(rng, taken.x, taken.y, '#f2c94c', 10);
   view.popups = [{ x: taken.x, y: taken.y - 20, text: '+100', color: '#f2c94c', size: 22, life: 0.7, maxLife: 1 }];
+  view.rivals = sceneRivals(level, 0.45, null);
   return view;
 }
 
@@ -139,37 +185,54 @@ function shotAction(seed) {
   view.score = 720;
   view.best = 1250;
   view.lives = 2;
-  // Search launches for one that grazes a planet: close, but not a crash.
-  let found = null;
-  outer: for (let a = -1.0; a <= 0.6; a += 0.1) {
-    for (let p = 0.6; p <= 1.0; p += 0.1) {
-      const vx = Math.cos(a) * p * SHIP.maxSpeed;
-      const vy = Math.sin(a) * p * SHIP.maxSpeed;
-      const path = simulateFlight(level, level.start.x, level.start.y, vx, vy, 170);
-      for (let i = 20; i < path.length; i += 1) {
-        for (const planet of level.planets) {
-          const d = Math.hypot(path[i].x - planet.x, path[i].y - planet.y);
-          if (d > planet.r + 8 && d < planet.r + 40) {
-            found = { path, i, planet };
-            break outer;
+  view.raceRank = 1;
+  view.raceOrder = [
+    { name: 'YOU', color: '#ffffff', progress: 40, isPlayer: true },
+    { name: 'REX', color: '#ff7a3c', progress: 30, isPlayer: false },
+    { name: 'MAYA', color: '#b678ff', progress: 20, isPlayer: false },
+  ];
+  // All stars collected: the strip is armed. (The stars MUST be marked
+  // taken before the search: simulateFlight only arms the landing when
+  // every star is taken, so without this no takeoff can land at all.)
+  for (const s of level.stars) s.taken = true;
+  view.starsLeft = 0;
+  view.stripArmed = true;
+  let best = null;
+  const search = (aStep, pStep) => {
+    for (let a = -0.6; a <= 0.601; a += aStep) {
+      for (let p = 0.4; p <= 1.001; p += pStep) {
+        const vx = Math.cos(a) * p * SHIP.maxSpeed;
+        const vy = Math.sin(a) * p * SHIP.maxSpeed;
+        const { points: path, land } = simulateFlight(level, FLIGHT_START.x, FLIGHT_START.y, vx, vy, 300, 0, true);
+        if (!land) continue;
+        // The approach point closest to the strip (largest x in the box).
+        for (let i = 0; i < path.length - 5; i += 1) {
+          if (path[i].x > 780 && path[i].x < 1080 && path[i].y > 380 && path[i].y < 600) {
+            if (!best || path[i].x > best.x) best = { path, i, x: path[i].x };
           }
         }
+        // No approach point on this path: keep the landing path itself as
+        // a fallback (its midpoint is still a real final approach).
+        if (!best) best = { path, i: Math.floor(path.length * 0.6), x: -1 };
       }
     }
-  }
-  if (!found) {
-    // No graze found on this layout: fall back to the play-style arc.
+  };
+  search(0.05, 0.05);
+  if (!best) search(0.01, 0.02);
+  if (!best) {
+    // No landing takeoff on this layout: fall back to the play-style arc.
     return shotPlay(seed);
   }
-  const { path, i } = found;
+  const { path, i } = best;
   const at = path[i];
   const prev = path[Math.max(0, i - 1)];
   const flightVx = (at.x - prev.x) / (1 / 60);
   const flightVy = (at.y - prev.y) / (1 / 60);
   view.ship = { x: at.x, y: at.y, vx: flightVx, vy: flightVy, angle: Math.atan2(flightVy, flightVx) };
-  view.trajectory = simulateFlight(level, at.x, at.y, flightVx, flightVy, 150);
-  view.particles = sparkles(rng, at.x, at.y, '#5df2ff', 8);
-  view.popups = [{ x: at.x, y: at.y - 26, text: 'GRAZE +25', color: '#7dffd4', size: 22, life: 0.7, maxLife: 1 }];
+  view.trajectory = simulateFlight(level, at.x, at.y, flightVx, flightVy, 150, 0, true).points;
+  view.particles = sparkles(rng, at.x, at.y, '#7dffd4', 8);
+  view.popups = [{ x: at.x, y: at.y - 30, text: 'FINAL APPROACH!', color: '#0e7490', size: 22, life: 0.7, maxLife: 1 }];
+  view.rivals = sceneRivals(level, 0.7, { x: 1120, y: 640, angle: 0, phase: 'land' });
   return view;
 }
 
@@ -181,8 +244,10 @@ function shotEnd(seed) {
   view.score = 1250;
   view.best = 1250;
   view.newBest = true;
+  view.won = true;
   view.lives = 0;
   view.starsLeft = 2;
+  view.rivals = sceneRivals(level, null, { x: 1120, y: 640, angle: 0, phase: 'land' });
   return view;
 }
 
