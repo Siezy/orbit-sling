@@ -3,7 +3,7 @@
 // logical area; the view scales it to the window with letterboxing, so the
 // game looks the same on every screen and in every screenshot.
 
-import { FIELD, FONT, PALETTE } from './config.js';
+import { FIELD, FONT, PALETTE, POWERUPS } from './config.js';
 import { createRandom } from './random.js';
 
 function roundRect(ctx, x, y, w, h, r) {
@@ -150,6 +150,35 @@ export function createRenderer(canvas) {
     ctx.restore();
   }
 
+  // A power-up orb: a glowing ring in the type's colour with its letter
+  // inside, so the player reads what it does at a glance.
+  function drawPowerup(p, time) {
+    const def = POWERUPS[p.type];
+    const pulse = 1 + 0.12 * Math.sin(time * 2.4 + p.phase);
+    const r = 15 * pulse;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.shadowColor = def.color;
+    ctx.shadowBlur = 20;
+    ctx.strokeStyle = def.color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(4, 8, 26, 0.55)';
+    ctx.beginPath();
+    ctx.arc(0, 0, r - 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = def.color;
+    ctx.font = `900 ${p.type === 'life' ? 20 : 17}px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(def.letter, 0, 1);
+    ctx.textBaseline = 'alphabetic';
+    ctx.restore();
+  }
+
   function drawAsteroid(a) {
     ctx.save();
     ctx.translate(a.x, a.y);
@@ -171,9 +200,20 @@ export function createRenderer(canvas) {
     ctx.restore();
   }
 
-  function drawShip(ship, time) {
+  function drawShip(ship, view) {
     ctx.save();
     ctx.translate(ship.x, ship.y);
+    // A held shield shows as a bright ring around the ship.
+    if (view.shield) {
+      ctx.strokeStyle = '#5df2ff';
+      ctx.lineWidth = 3;
+      ctx.shadowColor = '#5df2ff';
+      ctx.shadowBlur = 14;
+      ctx.beginPath();
+      ctx.arc(0, 0, 20, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
     ctx.rotate(ship.angle);
     ctx.shadowColor = PALETTE.shipGlow;
     ctx.shadowBlur = 16;
@@ -195,7 +235,6 @@ export function createRenderer(canvas) {
     ctx.arc(4, 0, 3, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
-    void time;
   }
 
   function drawTrajectory(points) {
@@ -288,6 +327,16 @@ export function createRenderer(canvas) {
     ctx.font = `600 16px ${FONT}`;
     ctx.fillStyle = PALETTE.muted;
     ctx.fillText(`BEST ${Math.max(best, score)}`, 24, 68);
+    // Held power-ups, as pills under the score so the player always sees them.
+    let badgeY = 96;
+    if (view.shield) {
+      drawBadge('SHIELD', '#5df2ff', 24, badgeY);
+      badgeY += 30;
+    }
+    if (view.magnetLeft > 0) {
+      drawBadge(`MAGNET ${Math.ceil(view.magnetLeft)}s`, '#ff7fb0', 24, badgeY);
+      badgeY += 30;
+    }
     ctx.textAlign = 'center';
     ctx.font = `800 22px ${FONT}`;
     ctx.fillStyle = PALETTE.text;
@@ -303,10 +352,12 @@ export function createRenderer(canvas) {
     ctx.textAlign = 'right';
     ctx.font = `600 16px ${FONT}`;
     ctx.fillStyle = PALETTE.muted;
-    ctx.fillText(view.muted ? 'MUTED (M)' : 'SOUND ON (M)', FIELD.width - 24, 42);
+    // Kept well inside the frame: the text used to sit close enough to the
+    // right edge that it read as clipped in screenshots.
+    ctx.fillText(view.muted ? 'MUTED (M)' : 'SOUND ON (M)', FIELD.width - 56, 42);
     // Lives, as little ships.
     for (let i = 0; i < lives; i += 1) {
-      const x = FIELD.width - 34 - i * 30;
+      const x = FIELD.width - 66 - i * 30;
       ctx.save();
       ctx.translate(x, 64);
       ctx.rotate(Math.PI / 2);
@@ -323,10 +374,25 @@ export function createRenderer(canvas) {
     ctx.textAlign = 'left';
   }
 
-  function drawHint(text) {
+  function drawBadge(text, color, x, y) {
+    ctx.font = `800 14px ${FONT}`;
+    const w = ctx.measureText(text).width + 20;
+    ctx.fillStyle = 'rgba(10, 16, 40, 0.72)';
+    roundRect(ctx, x, y - 15, w, 22, 11);
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, x, y - 15, w, 22, 11);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.textAlign = 'left';
+    ctx.fillText(text, x + 10, y + 1);
+  }
+
+  function drawHint(text, strong) {
     ctx.textAlign = 'center';
-    ctx.font = `600 17px ${FONT}`;
-    ctx.fillStyle = 'rgba(238, 243, 255, 0.75)';
+    ctx.font = `${strong ? 800 : 600} ${strong ? 20 : 17}px ${FONT}`;
+    ctx.fillStyle = strong ? '#7dffd4' : 'rgba(238, 243, 255, 0.75)';
     ctx.fillText(text, FIELD.width / 2, FIELD.height - 26);
     ctx.textAlign = 'left';
   }
@@ -444,19 +510,24 @@ export function createRenderer(canvas) {
     if (view.level) {
       for (const p of view.level.planets) drawPlanet(p, view.time);
       for (const s of view.level.stars) if (!s.taken) drawStarPickup(s, view.time);
+      for (const p of view.level.powerups ?? []) if (!p.taken) drawPowerup(p, view.time);
       for (const a of view.level.asteroids) drawAsteroid(a);
     }
     if (view.screen === 'aim' || view.screen === 'fly') {
       drawTrajectory(view.trajectory);
       drawAim(view);
     }
-    if (view.ship && view.screen !== 'title' && view.screen !== 'over') drawShip(view.ship, view.time);
+    if (view.ship && view.screen !== 'title' && view.screen !== 'over') drawShip(view.ship, view);
     drawParticles(view.particles);
     drawPopups(view.popups);
     if (view.screen !== 'title') drawHud(view);
     if (view.screen === 'title') drawTitle(view);
-    else if (view.screen === 'aim') drawHint('Drag to aim · release to launch — the dotted line is your flight path');
-    else if (view.screen === 'fly') drawHint('R restart level · P pause · M mute');
+    else if (view.hint) drawHint(view.hint, true);
+    else if (view.screen === 'aim') {
+      if (view.levelIndex === 1) drawHint('Drag to aim — planets bend your path. Release to launch!');
+      else if (view.levelIndex === 2) drawHint('Planets bend your flight — use gravity to reach the stars');
+      else drawHint('Drag to aim · release to launch — the dotted line is your flight path');
+    } else if (view.screen === 'fly') drawHint('R restart level · P pause · M mute');
     else if (view.screen === 'paused') drawPaused();
     else if (view.screen === 'clear') drawClear(view);
     else if (view.screen === 'over') drawOver(view);

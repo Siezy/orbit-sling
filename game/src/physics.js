@@ -2,7 +2,7 @@
 // plain objects, so the trajectory preview, the level generator and the live
 // game all fly the same physics — what the preview shows is what happens.
 
-import { FIELD, GRAZE_BAND, GRAVITY_G, LOST_MARGIN, SOFT2, STEP } from './config.js';
+import { FIELD, GRAZE_BAND, GRAVITY_G, LOST_MARGIN, MAGNET_PULL, MAGNET_RADIUS, SOFT2, STEP } from './config.js';
 
 function dist(x1, y1, x2, y2) {
   return Math.hypot(x1 - x2, y1 - y2);
@@ -157,6 +157,33 @@ export function starAt(level, ship) {
     if (!s.taken && dist(ship.x, ship.y, s.x, s.y) < 26) return s;
   }
   return null;
+}
+
+/** The first uncollected power-up within pickup range of the ship, if any. */
+export function powerupAt(level, ship) {
+  for (const p of level.powerups ?? []) {
+    if (!p.taken && dist(ship.x, ship.y, p.x, p.y) < 26) return p;
+  }
+  return null;
+}
+
+/**
+ * While the magnet is active, every uncollected star near the ship drifts
+ * toward it — the magnet widens the corridor a flight can sweep, so one
+ * good launch can bank several stars instead of one.
+ */
+export function pullStars(level, ship, dt) {
+  for (const s of level.stars) {
+    if (s.taken) continue;
+    const dx = ship.x - s.x;
+    const dy = ship.y - s.y;
+    const d = Math.hypot(dx, dy);
+    if (d < MAGNET_RADIUS && d > 20) {
+      const step = Math.min(MAGNET_PULL * dt, d - 20);
+      s.x += (dx / d) * step;
+      s.y += (dy / d) * step;
+    }
+  }
 }
 
 /**

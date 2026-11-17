@@ -21,6 +21,25 @@ export const SHIP = {
 };
 
 export const LIVES = 3;
+/** The most ships a run can hold (an extra-life power-up stops here). */
+export const LIFE_MAX = 5;
+
+/** Power-ups, one per level. Type cycles shield → magnet → life. */
+export const POWERUPS = {
+  shield: { letter: 'S', color: '#5df2ff', label: 'SHIELD', blurb: 'Shield! One crash forgiven.' },
+  magnet: { letter: 'M', color: '#ff7fb0', label: 'MAGNET', blurb: 'Magnet! Stars drift to you.' },
+  life: { letter: '+', color: '#7dffd4', label: 'EXTRA SHIP', blurb: 'Extra ship! +1 life.' },
+};
+/** The type on each level (1-based): shield, magnet, life, then repeat. */
+export const POWERUP_CYCLE = ['shield', 'magnet', 'life'];
+/** Magnet reach (px) and pull speed (px/s) while it is active. */
+export const MAGNET_RADIUS = 300;
+export const MAGNET_PULL = 220;
+/** Magnet lasts this many seconds of game time. 15s, not 10s: a magnet
+ * grabbed on one flight must still be alive after the player spends a few
+ * seconds aiming the next one — at 10s it expired mid-aim, so the next
+ * flight never got to use it. */
+export const MAGNET_SECONDS = 15;
 
 /** Seconds between star pickups for the combo to keep building. */
 export const COMBO_WINDOW = 4;

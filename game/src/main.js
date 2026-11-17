@@ -12,7 +12,10 @@ import {
   COMBO_MAX,
   COMBO_WINDOW,
   LEVEL,
+  LIFE_MAX,
   LIVES,
+  MAGNET_SECONDS,
+  POWERUPS,
   SCORE,
   SHIP,
   STEP,
@@ -22,6 +25,8 @@ import { generateLevel } from './levels.js';
 import {
   advanceShip,
   grazeCheck,
+  powerupAt,
+  pullStars,
   simulateFlight,
   starAt,
   updateAsteroids,
@@ -86,6 +91,13 @@ let clearTimer = 0;
 let time = 0;
 let shake = 0;
 let trajectory = null;
+/** Held power-ups: a shield (one crash forgiven) and a magnet timer. */
+let shield = false;
+let magnetUntil = 0;
+/** The one-time planet-approach hint (levels 1-2) and the hint on screen. */
+let hintShownPlanet = false;
+let hintText = null;
+let hintUntil = 0;
 
 function resetShip() {
   ship = {
@@ -114,6 +126,11 @@ function startRun() {
   comboTimer = 0;
   particles = [];
   popups = [];
+  shield = false;
+  magnetUntil = 0;
+  hintShownPlanet = false;
+  hintText = null;
+  hintUntil = 0;
   loadLevel(1);
   screen = 'aim';
   setStatus('Level 1. Drag to aim, release to launch.');
@@ -200,7 +217,35 @@ function collectStar(star) {
   }
 }
 
+function collectPowerup(pu) {
+  pu.taken = true;
+  const def = POWERUPS[pu.type];
+  audio.powerup();
+  burst(pu.x, pu.y, def.color, 16, 150);
+  popup(pu.x, pu.y - 20, def.label, def.color, 22);
+  popup(pu.x, pu.y + 10, def.blurb, '#eef3ff', 16);
+  if (pu.type === 'shield') {
+    shield = true;
+  } else if (pu.type === 'magnet') {
+    magnetUntil = time + MAGNET_SECONDS;
+  } else if (pu.type === 'life') {
+    lives = Math.min(lives + 1, LIFE_MAX);
+  }
+}
+
 function loseLife(crash) {
+  // A held shield forgives one crash: no life lost, the ship just re-aims.
+  if (shield) {
+    shield = false;
+    audio.shieldSave();
+    burst(ship.x, ship.y, '#5df2ff', 26, 260);
+    shake = 1;
+    popup(ship.x, ship.y - 24, 'SHIELD SAVED YOU!', '#5df2ff', 24);
+    resetShip();
+    screen = 'aim';
+    setStatus(`Shield absorbed the crash. ${lives} ${lives === 1 ? 'ship' : 'ships'} left. Aim again.`);
+    return;
+  }
   lives -= 1;
   audio.crash();
   burst(ship.x, ship.y, '#ff8a5c', 26, 260);
@@ -245,6 +290,7 @@ function update(dt) {
   if (screen === 'fly' && ship) {
     updateAsteroids(level, dt);
     ship.angle = Math.atan2(ship.vy, ship.vx);
+    if (time < magnetUntil) pullStars(level, ship, dt);
     const crash = advanceShip(level, ship, dt);
     if (crash) {
       loseLife(crash);
@@ -252,12 +298,26 @@ function update(dt) {
     }
     const star = starAt(level, ship);
     if (star) collectStar(star);
+    const pu = powerupAt(level, ship);
+    if (pu) collectPowerup(pu);
     if (screen === 'fly') {
       const grazed = grazeCheck(level, ship);
       if (grazed) {
         score += SCORE.graze;
         audio.graze();
         popup(ship.x, ship.y - 24, `GRAZE +${SCORE.graze}`, '#7dffd4', 20);
+      }
+      // First time the ship skims a planet (levels 1-2): teach the mechanic.
+      if (!hintShownPlanet && levelIndex <= 2) {
+        for (const p of level.planets) {
+          const d = Math.hypot(ship.x - p.x, ship.y - p.y);
+          if (d < p.r + 230) {
+            hintShownPlanet = true;
+            hintText = 'Gravity bends your flight — steer around the planet!';
+            hintUntil = time + 3;
+            break;
+          }
+        }
       }
       trajectory = simulateFlight(level, ship.x, ship.y, ship.vx, ship.vy, 150);
     }
@@ -358,6 +418,9 @@ function currentView() {
     muted: audio.muted,
     clearBonus,
     newBest,
+    shield,
+    magnetLeft: Math.max(0, magnetUntil - time),
+    hint: hintText && time < hintUntil ? hintText : null,
   };
 }
 

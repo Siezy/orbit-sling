@@ -116,6 +116,15 @@ export function createAudio() {
       tone(660 * Math.pow(1.059463, step), 0.12, 'sine', 0.3);
       setTimeout(() => tone(990 * Math.pow(1.059463, step), 0.16, 'sine', 0.25), 70);
     },
+    powerup() {
+      [523, 659, 784].forEach((freq, i) => {
+        setTimeout(() => tone(freq, 0.14, 'triangle', 0.25), i * 70);
+      });
+    },
+    shieldSave() {
+      tone(180, 0.25, 'sine', 0.4, 90);
+      setTimeout(() => tone(880, 0.18, 'triangle', 0.25), 90);
+    },
     graze() {
       tone(1240, 0.09, 'triangle', 0.2, 1560);
     },

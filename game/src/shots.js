@@ -70,24 +70,47 @@ function shotPlay(seed) {
   view.score = 350;
   view.best = 1250;
   view.lives = 2;
-  // A fixed launch, flown forward: search a few launches for the scene with
-  // the longest visible arc ahead of the ship, the ship near the middle of
-  // the frame — the trajectory preview is the game's signature, so the shot
-  // must show it bending around a planet.
+  // A fixed launch, flown forward: search for the most dramatic slingshot
+  // moment — the ship CLOSE to a planet, the arc bending hard around it, a
+  // star sitting on the arc ahead, the ship near the middle of the frame.
+  // A thumbnail must read at a glance: planet + bent arc + star, not a long
+  // thin line across an empty field.
   const candidates = [];
   for (const angle of [-0.5, -0.3, -0.1, 0.15]) {
     for (const power of [0.6, 0.75, 0.9]) {
       const vx = Math.cos(angle) * power * SHIP.maxSpeed;
       const vy = Math.sin(angle) * power * SHIP.maxSpeed;
       const path = simulateFlight(level, level.start.x, level.start.y, vx, vy, 150);
-      for (let i = 25; i < Math.min(110, path.length - 40); i += 1) {
+      for (let i = 25; i < Math.min(110, path.length - 45); i += 1) {
         let ahead = 0;
         for (let j = i; j < path.length; j += 1) {
           if (path[j].x < 0 || path[j].x > 1280 || path[j].y < 0 || path[j].y > 720) break;
           ahead += 1;
         }
+        // How close is the ship to a planet here (slingshot moment)?
+        let nearPlanet = 1e9;
+        for (const p of level.planets) {
+          nearPlanet = Math.min(nearPlanet, Math.hypot(path[i].x - p.x, path[i].y - p.y) - p.r);
+        }
+        // How hard does the arc bend ahead? (direction change over 40 steps)
+        const v1x = path[i + 1].x - path[i].x;
+        const v1y = path[i + 1].y - path[i].y;
+        const v2x = path[Math.min(i + 40, path.length - 1)].x - path[i + 20].x;
+        const v2y = path[Math.min(i + 40, path.length - 1)].y - path[i + 20].y;
+        const dot = (v1x * v2x + v1y * v2y) / (Math.hypot(v1x, v1y) * Math.hypot(v2x, v2y) + 1e-9);
+        const bend = Math.acos(Math.max(-1, Math.min(1, dot)));
+        // Is a star on the arc ahead (the shot's goal)?
+        let starNear = 0;
+        for (const s of level.stars) {
+          for (let j = i; j < Math.min(i + 60, path.length); j += 1) {
+            if (Math.hypot(path[j].x - s.x, path[j].y - s.y) < 130) { starNear = 1; break; }
+          }
+          if (starNear) break;
+        }
         const d = Math.hypot(path[i].x - 640, path[i].y - 360);
-        candidates.push({ path, i, score: ahead * 2 - d / 20 });
+        const closeBonus = nearPlanet > 15 && nearPlanet < 120 ? 200 : -Math.abs(nearPlanet - 60);
+        const score = bend * 300 + closeBonus + starNear * 150 + ahead * 1.5 - d / 25;
+        candidates.push({ path, i, score });
       }
     }
   }
