@@ -195,31 +195,66 @@ export function createRenderer(canvas) {
     }
   }
 
+  // Hex colour + alpha → rgba() string (for fading cloud edges).
+  function hexAlpha(hex, a) {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+  }
+
   function drawVortex(p, time) {
+    const r = p.r;
     // Wind radius, faint so the player can read the danger zone.
     ctx.strokeStyle = 'rgba(30, 58, 95, 0.16)';
     ctx.setLineDash([4, 9]);
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, p.r * 2.1, 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, r * 2.1, 0, Math.PI * 2);
     ctx.stroke();
     ctx.setLineDash([]);
-    // The storm cloud itself: a dark, swirling mass.
-    ctx.save();
-    ctx.shadowColor = 'rgba(35, 40, 56, 0.5)';
-    ctx.shadowBlur = 22;
-    const g = ctx.createRadialGradient(
-      p.x - p.r * 0.3, p.y - p.r * 0.35, p.r * 0.1,
-      p.x, p.y, p.r,
-    );
-    g.addColorStop(0, p.style.base);
-    g.addColorStop(1, p.style.dark);
-    ctx.fillStyle = g;
+    // Feathered halo: a soft glow that fades into the sky, so the cloud
+    // never has a hard dark edge.
+    const halo = ctx.createRadialGradient(p.x, p.y, r * 0.4, p.x, p.y, r * 1.25);
+    halo.addColorStop(0, hexAlpha(p.style.glow, 0.30));
+    halo.addColorStop(1, hexAlpha(p.style.glow, 0));
+    ctx.fillStyle = halo;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, r * 1.25, 0, Math.PI * 2);
     ctx.fill();
-    ctx.restore();
-    // Swirl arms, slowly rotating.
+    // Storm cloud body: overlapping seeded puffs, never one solid disc.
+    // Puff centres reuse the vortex's own seeded swirl knots plus a core
+    // puff and two fixed filler puffs, so the shape is fixed per vortex
+    // and identical every run. Each puff fades to transparent at its edge,
+    // so the puffs melt into one soft cloud instead of a hard circle.
+    const puffs = [{ dx: 0, dy: 0, rr: 0.55 }];
+    for (const c of p.swirls) {
+      puffs.push({ dx: c.dx, dy: c.dy, rr: (c.r / r) * 1.7 });
+    }
+    puffs.push({ dx: -0.42 * r, dy: 0.30 * r, rr: 0.42 });
+    puffs.push({ dx: 0.40 * r, dy: -0.34 * r, rr: 0.40 });
+    for (const q of puffs) {
+      const px = p.x + q.dx;
+      const py = p.y + q.dy;
+      const pr = q.rr * r;
+      const g = ctx.createRadialGradient(
+        px - pr * 0.25, py - pr * 0.3, pr * 0.1,
+        px, py, pr,
+      );
+      g.addColorStop(0, p.style.base);
+      g.addColorStop(0.7, p.style.base);
+      g.addColorStop(1, hexAlpha(p.style.base, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(px, py, pr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Soft knot shading: pale highlights on the seeded knots, never black.
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
+    for (const c of p.swirls) {
+      ctx.beginPath();
+      ctx.arc(p.x + c.dx - c.r * 0.2, p.y + c.dy - c.r * 0.25, c.r * 0.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Swirl arms, slowly rotating — two counter-rotating rings.
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.rotate(time * 0.25);
@@ -229,26 +264,34 @@ export function createRenderer(canvas) {
     for (let i = 0; i < 3; i += 1) {
       const a0 = (i / 3) * Math.PI * 2;
       ctx.beginPath();
-      ctx.arc(0, 0, p.r * 0.62, a0, a0 + 1.5);
+      ctx.arc(0, 0, r * 0.62, a0, a0 + 1.5);
+      ctx.stroke();
+    }
+    ctx.rotate(-time * 0.6);
+    ctx.globalAlpha = 0.45;
+    ctx.lineWidth = 4;
+    for (let i = 0; i < 2; i += 1) {
+      const a0 = (i / 2) * Math.PI * 2 + 0.6;
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 0.38, a0, a0 + 1.8);
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
     ctx.restore();
-    // Swirl knots.
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
-    for (const c of p.swirls) {
-      ctx.beginPath();
-      ctx.arc(p.x + c.dx, p.y + c.dy, c.r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    // Lightning zigzag in the cloud's heart.
+    // Vortex eye: a small calm pale centre.
+    ctx.fillStyle = 'rgba(232, 238, 246, 0.9)';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r * 0.13, 0, Math.PI * 2);
+    ctx.fill();
+    // Lightning zigzag in the cloud's heart, scaled to the cloud's radius.
+    const s = r / 60;
     ctx.strokeStyle = 'rgba(255, 240, 140, 0.9)';
     ctx.lineWidth = 2.5;
     ctx.beginPath();
-    ctx.moveTo(p.x - 6, p.y - 12);
-    ctx.lineTo(p.x + 2, p.y - 2);
-    ctx.lineTo(p.x - 4, p.y + 2);
-    ctx.lineTo(p.x + 6, p.y + 14);
+    ctx.moveTo(p.x - 6 * s, p.y - 12 * s);
+    ctx.lineTo(p.x + 2 * s, p.y - 2 * s);
+    ctx.lineTo(p.x - 4 * s, p.y + 2 * s);
+    ctx.lineTo(p.x + 6 * s, p.y + 14 * s);
     ctx.stroke();
   }
 
@@ -897,7 +940,7 @@ export function createRenderer(canvas) {
       const labels = order.map((e, i) => `${i + 1}. ${e.name}`);
       const text2 = `RACE  ${labels.join('   ')}`;
       const w = ctx.measureText(text2).width;
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
       roundRect(ctx, FIELD.width / 2 - w / 2 - 12, 96, w + 24, 26, 13);
       ctx.fill();
       let cx = FIELD.width / 2 - w / 2;

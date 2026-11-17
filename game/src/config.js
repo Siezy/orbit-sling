@@ -258,12 +258,14 @@ export const PALETTE = {
   turbulence: 'rgba(255, 255, 255, 0.5)',
 };
 
-/** Storm vortex looks: base, dark core, rim shade. */
+/** Storm vortex looks: base, dark core, rim shade. Mid grey-blue
+ * storm-cloud tones only — no near-black stop anywhere, so a vortex
+ * reads as a soft cloud, never as a solid black disc. */
 export const VORTEX_STYLES = [
-  { base: '#4a5468', dark: '#232838', glow: '#7d8aa5', rim: '#aab6cc' },
-  { base: '#54466e', dark: '#2b2140', glow: '#8a76b8', rim: '#b39ddb' },
-  { base: '#3d5a6e', dark: '#1d3242', glow: '#6d93ad', rim: '#9dbfd4' },
-  { base: '#5e4a5e', dark: '#332433', glow: '#967a96', rim: '#c2a6c2' },
+  { base: '#7d8cab', dark: '#67779a', glow: '#a7b6cf', rim: '#ccd5e4' },
+  { base: '#8a7aae', dark: '#6f5d97', glow: '#b3a4d2', rim: '#d2c6ea' },
+  { base: '#6f93a8', dark: '#57738a', glow: '#9cc0d2', rim: '#c0d9e6' },
+  { base: '#9a7f99', dark: '#7d627c', glow: '#c0a9be', rim: '#dccadb' },
 ];
 
 export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
