@@ -15,6 +15,7 @@ const CONFIRM = new Set(['Space', 'Enter']);
 const PAUSE = new Set(['KeyP', 'Escape']);
 const RESTART = new Set(['KeyR']);
 const MUTE = new Set(['KeyM']);
+const DIGITS = new Set(['Digit1', 'Digit2', 'Digit3']);
 const AIM_LEFT = new Set(['ArrowLeft', 'KeyA']);
 const AIM_RIGHT = new Set(['ArrowRight', 'KeyD']);
 const AIM_UP = new Set(['ArrowUp', 'KeyW']);
@@ -25,6 +26,8 @@ export function createInput(canvas, toField) {
   // Pointer drag, in field coordinates (null when no drag is happening).
   let drag = null;
   let released = null;
+  // Workshop pick: 1, 2 or 3 pressed since the last takeDigit() call.
+  let digit = null;
   // Keyboard aim: angle in radians (0 = right, negative = up) and power 0..1.
   // It wakes the first time an arrow key is pressed.
   const keyboardAim = { active: false, angle: -0.6, power: 0.6 };
@@ -76,6 +79,8 @@ export function createInput(canvas, toField) {
       if (!event.repeat) actions |= ACTION_RESTART;
     } else if (MUTE.has(event.code)) {
       if (!event.repeat) actions |= ACTION_MUTE;
+    } else if (DIGITS.has(event.code)) {
+      if (!event.repeat) digit = Number(event.code.slice(-1));
     } else if (AIM_LEFT.has(event.code)) {
       keyboardAim.active = true;
       keyboardAim.angle -= 0.06;
@@ -114,6 +119,12 @@ export function createInput(canvas, toField) {
     takeRelease() {
       const taken = released;
       released = null;
+      return taken;
+    },
+    /** A workshop digit (1, 2 or 3) pressed since the last call, or null. */
+    takeDigit() {
+      const taken = digit;
+      digit = null;
       return taken;
     },
   };

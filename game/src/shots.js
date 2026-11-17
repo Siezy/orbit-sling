@@ -2,13 +2,14 @@
 // Each builds a fixed view of the game — same seed, same pixels — paints it
 // twice and sets window.__shotReady, so a screenshot tool knows the frame
 // is settled. The scenes are real states of the game's own code: the title
-// screen over the runway, a plane mid-flight racing a rival, the landing
-// approach onto the strip, and the race-over screen.
+// screen over the first realm, a plane mid-flight racing a rival through
+// the Storm Peaks, the final approach under the Thunderhead, and the
+// campaign-end screen.
 
 import { SHIP } from './config.js';
 import { createRandom } from './random.js';
 import { FLIGHT_START, generateLevel } from './levels.js';
-import { simulateFlight } from './physics.js';
+import { boltState, bossAt, simulateFlight } from './physics.js';
 
 const TIME = 0.52;
 
@@ -22,7 +23,7 @@ function baseView(level, seed) {
     score: 0,
     best: 0,
     lives: 3,
-    levelIndex: level.level,
+    levelIndex: level.stage,
     starsLeft: level.stars.length,
     aim: null,
     power: null,
@@ -47,6 +48,18 @@ function baseView(level, seed) {
       { name: 'YOU', color: '#ffffff', progress: 20, isPlayer: true },
       { name: 'MAYA', color: '#b678ff', progress: 10, isPlayer: false },
     ],
+    fuel: 100,
+    fuelMax: 100,
+    combo: 0,
+    relics: [],
+    stageName: '',
+    realmName: '',
+    boss: null,
+    introStage: 1,
+    introRealm: null,
+    workshopOffers: null,
+    workshopCards: null,
+    summary: null,
   };
 }
 
@@ -107,19 +120,24 @@ function shotStart(seed) {
 
 function shotPlay(seed) {
   const rng = createRandom(seed);
-  const level = generateLevel(rng, 2);
+  const level = generateLevel(rng, 3);
   const view = baseView(level, seed);
   view.screen = 'fly';
   view.score = 350;
   view.best = 1250;
   view.lives = 2;
   view.shield = true;
+  view.combo = 2;
+  view.fuel = 62;
+  view.relics = ['tank'];
+  view.stageName = 'Peak Crossing';
+  view.realmName = 'STORM PEAKS';
   view.raceRank = 2;
   // A fixed takeoff, flown forward: search for the most dramatic racing
   // moment — the plane CLOSE to a vortex, the arc bending hard around it, a
-  // star sitting on the arc ahead, the plane near the middle of the frame.
-  // A thumbnail must read at a glance: plane + bent arc + star, not a long
-  // thin line across an empty field.
+  // star and a boost ring sitting on the arc ahead, the plane near the
+  // middle of the frame. A thumbnail must read at a glance: plane + bent
+  // arc + star, not a long thin line across an empty field.
   const candidates = [];
   for (const angle of [-0.5, -0.3, -0.1, 0.15]) {
     for (const power of [0.6, 0.75, 0.9]) {
@@ -144,23 +162,47 @@ function shotPlay(seed) {
         const v2y = path[Math.min(i + 40, path.length - 1)].y - path[i + 20].y;
         const dot = (v1x * v2x + v1y * v2y) / (Math.hypot(v1x, v1y) * Math.hypot(v2x, v2y) + 1e-9);
         const bend = Math.acos(Math.max(-1, Math.min(1, dot)));
-        // Is a star on the arc ahead (the shot's goal)?
+        // Is a star or a ring on the arc ahead (the shot's goal)?
         let starNear = 0;
+        let ringNear = 0;
         for (const s of level.stars) {
           for (let j = i; j < Math.min(i + 60, path.length); j += 1) {
             if (Math.hypot(path[j].x - s.x, path[j].y - s.y) < 130) { starNear = 1; break; }
           }
           if (starNear) break;
         }
+        for (const r of level.rings ?? []) {
+          for (let j = i; j < Math.min(i + 60, path.length); j += 1) {
+            if (Math.hypot(path[j].x - r.x, path[j].y - r.y) < 130) { ringNear = 1; break; }
+          }
+          if (ringNear) break;
+        }
         const d = Math.hypot(path[i].x - 640, path[i].y - 360);
         const closeBonus = nearVortex > 15 && nearVortex < 120 ? 200 : -Math.abs(nearVortex - 60);
-        const score = bend * 300 + closeBonus + starNear * 150 + ahead * 1.5 - d / 25;
+        const score = bend * 300 + closeBonus + starNear * 150 + ringNear * 120 + ahead * 1.5 - d / 25;
         candidates.push({ path, i, score });
       }
     }
   }
   candidates.sort((a, b) => b.score - a.score);
-  const { path, i: pick } = candidates[0];
+  // Take the best candidate whose forward trajectory does NOT end in a
+  // crash: the shot's trajectory preview draws a red X for a crash ending,
+  // and the dossier's play shot should read as a race, not a doom marker.
+  // Fall back to the top candidate if every one ends in a crash.
+  let chosen = candidates[0];
+  for (const cand of candidates.slice(0, 25)) {
+    const at = cand.path[cand.i];
+    const prev = cand.path[Math.max(0, cand.i - 1)];
+    const fvx = (at.x - prev.x) / (1 / 60);
+    const fvy = (at.y - prev.y) / (1 / 60);
+    const fwd = simulateFlight(level, at.x, at.y, fvx, fvy, 150, 0, true);
+    const fwdHit = fwd.points[fwd.points.length - 1].hit;
+    if (fwdHit !== 'vortex' && fwdHit !== 'storm' && fwdHit !== 'boss' && fwdHit !== 'bolt' && fwdHit !== 'ground') {
+      chosen = cand;
+      break;
+    }
+  }
+  const { path, i: pick } = chosen;
   const at = path[pick];
   const prev = path[Math.max(0, pick - 1)];
   const flightVx = (at.x - prev.x) / (1 / 60);
@@ -179,13 +221,17 @@ function shotPlay(seed) {
 
 function shotAction(seed) {
   const rng = createRandom(seed);
-  const level = generateLevel(rng, 3);
+  const level = generateLevel(rng, 9);
   const view = baseView(level, seed);
   view.screen = 'fly';
-  view.score = 720;
-  view.best = 1250;
+  view.score = 3420;
+  view.best = 3420;
   view.lives = 2;
   view.raceRank = 1;
+  view.stageName = 'Thunderhead';
+  view.realmName = 'NIGHT SUMMIT';
+  view.relics = ['tank', 'magnet', 'plating'];
+  view.fuel = 71;
   view.raceOrder = [
     { name: 'YOU', color: '#ffffff', progress: 40, isPlayer: true },
     { name: 'REX', color: '#ff7a3c', progress: 30, isPlayer: false },
@@ -230,6 +276,17 @@ function shotAction(seed) {
   const flightVy = (at.y - prev.y) / (1 / 60);
   view.ship = { x: at.x, y: at.y, vx: flightVx, vy: flightVy, angle: Math.atan2(flightVy, flightVx) };
   view.trajectory = simulateFlight(level, at.x, at.y, flightVx, flightVy, 150, 0, true).points;
+  // The Thunderhead at stage time 7.2 s: mid-drift, and a bolt is being
+  // telegraphed (the 8 s strike warns from 6.8 s). If the plane would sit
+  // inside the boss or the warning column, pick the next approach point.
+  const bossTime = 7.2;
+  let bossView = { pos: bossAt(level, bossTime), ...boltState(level, bossTime) };
+  if (Math.hypot(at.x - bossView.pos.x, at.y - bossView.pos.y) < 160
+    || (bossView.telegraph != null && Math.abs(at.x - bossView.telegraph) < 60)) {
+    bossView = { pos: bossAt(level, 2.0), ...boltState(level, 2.0) };
+  }
+  view.boss = bossView;
+  view.time = bossTime;
   view.particles = sparkles(rng, at.x, at.y, '#7dffd4', 8);
   view.popups = [{ x: at.x, y: at.y - 30, text: 'FINAL APPROACH!', color: '#0e7490', size: 22, life: 0.7, maxLife: 1 }];
   view.rivals = sceneRivals(level, 0.7, { x: 1120, y: 640, angle: 0, phase: 'land' });
@@ -238,15 +295,19 @@ function shotAction(seed) {
 
 function shotEnd(seed) {
   const rng = createRandom(seed);
-  const level = generateLevel(rng, 3);
+  const level = generateLevel(rng, 9);
   const view = baseView(level, seed);
   view.screen = 'over';
-  view.score = 1250;
-  view.best = 1250;
+  view.score = 4850;
+  view.best = 4850;
   view.newBest = true;
   view.won = true;
   view.lives = 0;
-  view.starsLeft = 2;
+  view.starsLeft = 0;
+  for (const s of level.stars) s.taken = true;
+  view.stageName = 'Thunderhead';
+  view.realmName = 'NIGHT SUMMIT';
+  view.summary = { time: 272, stars: 41, relics: ['tank', 'magnet', 'plating', 'wings'], bestRank: 1 };
   view.rivals = sceneRivals(level, null, { x: 1120, y: 640, angle: 0, phase: 'land' });
   return view;
 }

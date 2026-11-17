@@ -1,10 +1,11 @@
-// All canvas drawing: bright sky, runway and landing strip, the airplane,
-// storm vortexes, the trajectory preview, particles, the HUD and the screens.
-// The playfield is a fixed 1280x720 logical area; the view scales it to the
-// window with letterboxing, so the game looks the same on every screen and
-// in every screenshot.
+// All canvas drawing: the realm skies, runway and landing strip, the
+// airplane, storm vortexes, boost rings, the Thunderhead boss, the
+// trajectory preview, particles, the HUD and the screens. The playfield is
+// a fixed 1280x720 logical area; the view scales it to the window with
+// letterboxing, so the game looks the same on every screen and in every
+// screenshot.
 
-import { FIELD, FONT, GROUND_LINE, GROUND_TOP, PALETTE, POWERUPS, STRIP, TAKEOFF_ROLL } from './config.js';
+import { BOSS, FIELD, FONT, GROUND_LINE, GROUND_TOP, PALETTE, POWERUPS, RELICS, STRIP, TAKEOFF_ROLL } from './config.js';
 import { createRandom } from './random.js';
 import { FLIGHT_START } from './levels.js';
 
@@ -34,6 +35,14 @@ export function createRenderer(canvas) {
     speed: cloudRng.range(4, 10),
     alpha: cloudRng.range(0.55, 0.9),
   }));
+  // Fixed stars for the night realm.
+  const starRng = createRandom(777);
+  const nightStars = Array.from({ length: 42 }, () => ({
+    x: starRng.range(0, FIELD.width),
+    y: starRng.range(0, 560),
+    r: starRng.range(0.8, 2.2),
+    tw: starRng.range(0, Math.PI * 2),
+  }));
 
   function resize() {
     dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -50,30 +59,64 @@ export function createRenderer(canvas) {
     return { x: (cx - offX) / scale, y: (cy - offY) / scale };
   }
 
-  function drawBackground(time) {
+  /** The realm's palette for this view (the v3 bright sky by default). */
+  function realmPal(view) {
+    return view.level?.palette ?? PALETTE;
+  }
+
+  function drawBackground(view, time) {
+    const pal = realmPal(view);
     const bg = ctx.createLinearGradient(0, 0, 0, GROUND_TOP);
-    bg.addColorStop(0, PALETTE.skyTop);
-    bg.addColorStop(0.55, PALETTE.skyMid);
-    bg.addColorStop(1, PALETTE.skyHorizon);
+    bg.addColorStop(0, pal.skyTop);
+    bg.addColorStop(0.55, pal.skyMid);
+    bg.addColorStop(1, pal.skyHorizon);
     ctx.fillStyle = bg;
     ctx.fillRect(-40, -40, FIELD.width + 80, GROUND_TOP + 40);
-    // Sun, top-right.
+    // Night realm: fixed stars twinkling in the sky.
+    if (pal.night) {
+      for (const s of nightStars) {
+        ctx.globalAlpha = 0.5 + 0.5 * Math.sin(time * 1.5 + s.tw);
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+    // Sun by day, moon by night, top-right.
     const sunX = 1150;
     const sunY = 88;
-    const glow = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, 110);
-    glow.addColorStop(0, 'rgba(255, 217, 77, 0.85)');
-    glow.addColorStop(1, 'rgba(255, 217, 77, 0)');
-    ctx.fillStyle = glow;
-    ctx.fillRect(sunX - 110, sunY - 110, 220, 220);
-    ctx.fillStyle = PALETTE.sun;
-    ctx.beginPath();
-    ctx.arc(sunX, sunY, 34, 0, Math.PI * 2);
-    ctx.fill();
+    if (pal.night) {
+      const glow = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, 90);
+      glow.addColorStop(0, 'rgba(220, 230, 255, 0.5)');
+      glow.addColorStop(1, 'rgba(220, 230, 255, 0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(sunX - 90, sunY - 90, 180, 180);
+      ctx.fillStyle = '#dfe6f5';
+      ctx.beginPath();
+      ctx.arc(sunX, sunY, 28, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(160, 175, 205, 0.8)';
+      ctx.beginPath();
+      ctx.arc(sunX - 8, sunY - 6, 6, 0, Math.PI * 2);
+      ctx.arc(sunX + 9, sunY + 8, 4, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      const glow = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, 110);
+      glow.addColorStop(0, 'rgba(255, 217, 77, 0.85)');
+      glow.addColorStop(1, 'rgba(255, 217, 77, 0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(sunX - 110, sunY - 110, 220, 220);
+      ctx.fillStyle = PALETTE.sun;
+      ctx.beginPath();
+      ctx.arc(sunX, sunY, 34, 0, Math.PI * 2);
+      ctx.fill();
+    }
     // Drifting clouds.
     for (const c of clouds) {
       const span = FIELD.width + 360;
       const x = (((c.x + time * c.speed + 180) % span) + span) % span - 180;
-      ctx.globalAlpha = c.alpha;
+      ctx.globalAlpha = c.alpha * (pal.night ? 0.35 : 1);
       ctx.fillStyle = PALETTE.cloud;
       const s = c.s;
       ctx.beginPath();
@@ -86,10 +129,11 @@ export function createRenderer(canvas) {
   }
 
   function drawGround(view) {
+    const pal = realmPal(view);
     // Grass band.
-    ctx.fillStyle = PALETTE.ground;
+    ctx.fillStyle = pal.ground;
     ctx.fillRect(-40, GROUND_TOP, FIELD.width + 80, FIELD.height - GROUND_TOP + 40);
-    ctx.fillStyle = PALETTE.groundDark;
+    ctx.fillStyle = pal.groundDark;
     ctx.fillRect(-40, GROUND_TOP, FIELD.width + 80, 6);
     // Mowing stripes.
     ctx.fillStyle = 'rgba(255,255,255,0.06)';
@@ -234,6 +278,38 @@ export function createRenderer(canvas) {
     ctx.restore();
   }
 
+  // A boost ring: a golden ring with a lightning bolt inside. Flying
+  // through it refills fuel and kicks the plane faster.
+  function drawRing(r, time) {
+    const pulse = 1 + 0.1 * Math.sin(time * 3.2 + r.phase);
+    const rad = 20 * pulse;
+    ctx.save();
+    ctx.translate(r.x, r.y);
+    ctx.shadowColor = '#ffd94d';
+    ctx.shadowBlur = 18;
+    ctx.strokeStyle = '#ffd94d';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(0, 0, rad, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#b8860b';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(0, 0, rad - 4, 0, Math.PI * 2);
+    ctx.stroke();
+    // Bolt inside the ring.
+    ctx.strokeStyle = '#fff3b0';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(2, -11);
+    ctx.lineTo(-4, 1);
+    ctx.lineTo(1, 1);
+    ctx.lineTo(-2, 11);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   // A power-up orb: a glowing ring in the type's colour with its letter
   // inside, so the player reads what it does at a glance.
   function drawPowerup(p, time) {
@@ -341,6 +417,109 @@ export function createRenderer(canvas) {
     x = (((x + 40) % span) + span) % span - 40;
     const y = b.baseY + Math.sin(time * b.freq + b.phase) * b.amp;
     return { x, y };
+  }
+
+  /**
+   * The Thunderhead boss: a giant storm cloud drifting across the field,
+   * with a telegraphed lightning column (flashing warning) or a striking
+   * bolt (a jagged line to the ground). view.boss carries { pos,
+   * telegraph, striking }.
+   */
+  function drawBoss(view) {
+    const b = view.boss;
+    if (!b) return;
+    const { pos } = b;
+    const r = BOSS.radius;
+    // Telegraph: a flashing warning column where the bolt will land.
+    if (b.telegraph != null) {
+      const blink = 0.35 + 0.3 * Math.sin(view.time * 14);
+      ctx.fillStyle = `rgba(255, 93, 108, ${blink})`;
+      ctx.fillRect(b.telegraph - BOSS.boltWidth / 2, 0, BOSS.boltWidth, GROUND_LINE);
+      ctx.strokeStyle = `rgba(255, 93, 108, ${Math.min(1, blink + 0.3)})`;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 6]);
+      ctx.strokeRect(b.telegraph - BOSS.boltWidth / 2, 0, BOSS.boltWidth, GROUND_LINE);
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#ff5d6c';
+      ctx.font = `900 18px ${FONT}`;
+      ctx.textAlign = 'center';
+      // Mid-column, below the HUD: at the top it collides with the stage
+      // title when the column is near the centre of the field.
+      ctx.fillText('⚡ LIGHTNING!', b.telegraph, 150);
+      ctx.textAlign = 'left';
+    }
+    // Striking bolt: a jagged line from the cloud to the ground, plus a flash.
+    if (b.striking != null) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+      ctx.fillRect(-40, -40, FIELD.width + 80, FIELD.height + 80);
+      ctx.strokeStyle = '#fff3b0';
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      let bx = b.striking;
+      let by = pos.y + r * 0.4;
+      ctx.moveTo(bx, by);
+      while (by < GROUND_LINE) {
+        bx += (Math.sin(by * 0.35) * 14);
+        by += 42;
+        ctx.lineTo(bx, Math.min(by, GROUND_LINE));
+      }
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255, 240, 140, 0.6)';
+      ctx.lineWidth = 11;
+      ctx.stroke();
+    }
+    // The cloud itself: a huge dark mass with swirling arms and lightning.
+    ctx.save();
+    ctx.shadowColor = 'rgba(20, 16, 40, 0.7)';
+    ctx.shadowBlur = 34;
+    const g = ctx.createRadialGradient(
+      pos.x - r * 0.3, pos.y - r * 0.35, r * 0.1,
+      pos.x, pos.y, r,
+    );
+    g.addColorStop(0, '#4a4468');
+    g.addColorStop(0.6, '#2b2140');
+    g.addColorStop(1, '#171226');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    // Swirl arms, rotating.
+    ctx.save();
+    ctx.translate(pos.x, pos.y);
+    ctx.rotate(view.time * 0.4);
+    ctx.strokeStyle = 'rgba(179, 157, 219, 0.7)';
+    ctx.lineWidth = 7;
+    for (let i = 0; i < 3; i += 1) {
+      const a0 = (i / 3) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 0.6, a0, a0 + 1.7);
+      ctx.stroke();
+    }
+    ctx.restore();
+    // The boss's danger ring, so the player reads the crash radius.
+    ctx.strokeStyle = 'rgba(255, 93, 108, 0.35)';
+    ctx.setLineDash([6, 10]);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, r + 6, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Lightning zigzags in the cloud's heart.
+    ctx.strokeStyle = 'rgba(255, 240, 140, 0.95)';
+    ctx.lineWidth = 3.5;
+    ctx.beginPath();
+    ctx.moveTo(pos.x - 14, pos.y - 26);
+    ctx.lineTo(pos.x + 4, pos.y - 6);
+    ctx.lineTo(pos.x - 8, pos.y + 2);
+    ctx.lineTo(pos.x + 14, pos.y + 28);
+    ctx.stroke();
+    // Name tag.
+    ctx.font = `900 20px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ff8a9a';
+    ctx.fillText('THUNDERHEAD', pos.x, pos.y - r - 14);
+    ctx.textAlign = 'left';
   }
 
   /**
@@ -492,7 +671,7 @@ export function createRenderer(canvas) {
       ctx.textAlign = 'center';
       ctx.fillText('⚑', last.x, last.y - 8);
       ctx.textAlign = 'left';
-    } else if (last.hit === 'vortex' || last.hit === 'storm' || last.hit === 'ground') {
+    } else if (last.hit === 'vortex' || last.hit === 'storm' || last.hit === 'ground' || last.hit === 'boss' || last.hit === 'bolt') {
       ctx.globalAlpha = 0.95;
       ctx.strokeStyle = '#ff5d6c';
       ctx.lineWidth = 3;
@@ -502,6 +681,13 @@ export function createRenderer(canvas) {
       ctx.moveTo(last.x + 8, last.y - 8);
       ctx.lineTo(last.x - 8, last.y + 8);
       ctx.stroke();
+    } else if (last.hit === 'fuel') {
+      ctx.globalAlpha = 0.95;
+      ctx.fillStyle = '#f2a007';
+      ctx.font = `900 20px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText('OUT OF FUEL', last.x, last.y - 8);
+      ctx.textAlign = 'left';
     }
     ctx.globalAlpha = 1;
   }
@@ -566,6 +752,38 @@ export function createRenderer(canvas) {
     ctx.textAlign = 'left';
   }
 
+  /** Fuel gauge, bottom-left: the tank drains in the air, rings refill it. */
+  function drawFuel(view) {
+    if (view.screen !== 'fly' && view.screen !== 'aim' && view.screen !== 'takeoff') return;
+    const fuel = view.fuel ?? 0;
+    const max = view.fuelMax ?? 100;
+    const frac = Math.max(0, Math.min(1, fuel / max));
+    const w = 220;
+    const h = 16;
+    const x = 24;
+    const y = FIELD.height - 52;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    roundRect(ctx, x, y, w, h, 8);
+    ctx.fill();
+    ctx.strokeStyle = '#5b6b7f';
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, x, y, w, h, 8);
+    ctx.stroke();
+    const fill = frac < 0.25 ? '#e63946' : frac < 0.5 ? '#f2a007' : '#2f9e44';
+    ctx.fillStyle = fill;
+    if (frac > 0.02) {
+      roundRect(ctx, x + 2, y + 2, (w - 4) * frac, h - 4, 6);
+      ctx.fill();
+    }
+    const pal = realmPal(view);
+    ctx.fillStyle = pal.text;
+    ctx.font = `800 14px ${FONT}`;
+    ctx.textAlign = 'left';
+    // The label sits right of the bar: above it is the runway, and text
+    // there sits on the asphalt and reads as clipped.
+    ctx.fillText(`FUEL ${Math.round(fuel)}`, x + w + 10, y + 13);
+  }
+
   function drawParticles(particles) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
@@ -601,12 +819,15 @@ export function createRenderer(canvas) {
 
   function drawHud(view) {
     const { score, best, lives, levelIndex, starsLeft } = view;
+    const pal = realmPal(view);
+    const text = pal.text;
+    const muted = pal.muted;
     ctx.textAlign = 'left';
     ctx.font = `800 30px ${FONT}`;
-    ctx.fillStyle = PALETTE.text;
+    ctx.fillStyle = text;
     ctx.fillText(`SCORE ${score}`, 24, 44);
     ctx.font = `600 16px ${FONT}`;
-    ctx.fillStyle = PALETTE.muted;
+    ctx.fillStyle = muted;
     ctx.fillText(`BEST ${Math.max(best, score)}`, 24, 68);
     // Held power-ups, as pills under the score so the player always sees them.
     let badgeY = 96;
@@ -618,10 +839,46 @@ export function createRenderer(canvas) {
       drawBadge(`MAGNET ${Math.ceil(view.magnetLeft)}s`, '#be185d', 24, badgeY);
       badgeY += 30;
     }
+    // Combo, when it is live.
+    if (view.combo > 1) {
+      drawBadge(`COMBO x${view.combo}`, '#0e7490', 24, badgeY);
+      badgeY += 30;
+    }
+    // Relics, as small letter chips in a row.
+    if (view.relics && view.relics.length > 0) {
+      let rx = 24;
+      for (const id of view.relics) {
+        const def = RELICS[id];
+        if (!def) continue;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+        ctx.beginPath();
+        ctx.arc(rx + 11, badgeY, 11, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = def.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(rx + 11, badgeY, 11, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = def.color;
+        ctx.font = `900 ${def.letter.length > 1 ? 10 : 13}px ${FONT}`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(def.letter, rx + 11, badgeY + 1);
+        ctx.textBaseline = 'alphabetic';
+        rx += 28;
+      }
+      badgeY += 30;
+    }
     ctx.textAlign = 'center';
     ctx.font = `800 22px ${FONT}`;
-    ctx.fillStyle = PALETTE.text;
-    ctx.fillText(`LEVEL ${levelIndex}`, FIELD.width / 2, 42);
+    ctx.fillStyle = text;
+    const stageLabel = view.stageName ? `STAGE ${levelIndex} · ${view.stageName.toUpperCase()}` : `STAGE ${levelIndex}`;
+    ctx.fillText(stageLabel, FIELD.width / 2, 42);
+    if (view.realmName) {
+      ctx.font = `600 14px ${FONT}`;
+      ctx.fillStyle = muted;
+      ctx.fillText(view.realmName, FIELD.width / 2, 64);
+    }
     // Stars left, as little icons.
     for (let i = 0; i < starsLeft; i += 1) {
       const x = FIELD.width / 2 - ((starsLeft - 1) * 16) + i * 32;
@@ -629,36 +886,36 @@ export function createRenderer(canvas) {
       ctx.strokeStyle = '#b8860b';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.arc(x, 62, 6, 0, Math.PI * 2);
+      ctx.arc(x, 84, 6, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
     }
-    // Race position, under the level: the three racers in rank order.
+    // Race position, under the stage: the three racers in rank order.
     const order = view.raceOrder ?? [];
     if (order.length === 3) {
       ctx.font = `800 16px ${FONT}`;
       const labels = order.map((e, i) => `${i + 1}. ${e.name}`);
-      const text = `RACE  ${labels.join('   ')}`;
-      const w = ctx.measureText(text).width;
+      const text2 = `RACE  ${labels.join('   ')}`;
+      const w = ctx.measureText(text2).width;
       ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
-      roundRect(ctx, FIELD.width / 2 - w / 2 - 12, 74, w + 24, 26, 13);
+      roundRect(ctx, FIELD.width / 2 - w / 2 - 12, 96, w + 24, 26, 13);
       ctx.fill();
       let cx = FIELD.width / 2 - w / 2;
       ctx.textAlign = 'left';
-      ctx.fillStyle = PALETTE.muted;
-      ctx.fillText('RACE', cx, 92);
+      ctx.fillStyle = muted;
+      ctx.fillText('RACE', cx, 114);
       cx += ctx.measureText('RACE  ').width;
       order.forEach((e, i) => {
         const label = `${i + 1}. ${e.name}`;
         ctx.fillStyle = e.isPlayer ? '#0e7490' : e.color;
-        ctx.fillText(label, cx, 92);
+        ctx.fillText(label, cx, 114);
         cx += ctx.measureText(`${label}   `).width;
       });
       ctx.textAlign = 'center';
     }
     ctx.textAlign = 'right';
     ctx.font = `600 16px ${FONT}`;
-    ctx.fillStyle = PALETTE.muted;
+    ctx.fillStyle = muted;
     // Kept well inside the frame: the text used to sit close enough to the
     // right edge that it read as clipped in screenshots.
     ctx.fillText(view.muted ? 'MUTED (M)' : 'SOUND ON (M)', FIELD.width - 56, 42);
@@ -745,12 +1002,111 @@ export function createRenderer(canvas) {
     ctx.globalAlpha = 1;
     ctx.fillStyle = PALETTE.muted;
     ctx.font = `600 16px ${FONT}`;
-    ctx.fillText('Drag to aim · release to take off · Arrows aim too · R restart · P pause · M mute', cx, 448);
+    ctx.fillText('9 stages · 4 realms · the Thunderhead waits at the summit', cx, 448);
     if (view.best > 0) {
       ctx.fillStyle = '#b8860b';
       ctx.font = `700 18px ${FONT}`;
       ctx.fillText(`BEST ${view.best}`, cx, 478);
     }
+    ctx.textAlign = 'left';
+  }
+
+  /** Realm intro card (or the boss intro): name, flavor, stages, fly. */
+  function drawIntro(view) {
+    ctx.textAlign = 'center';
+    const cx = FIELD.width / 2;
+    const isBoss = view.introStage === 9;
+    drawPanel(cx - 330, 170, 660, 320);
+    if (isBoss) {
+      ctx.fillStyle = '#dc2626';
+      ctx.font = `900 64px ${FONT}`;
+      ctx.fillText('THUNDERHEAD', cx, 258);
+      ctx.fillStyle = PALETTE.text;
+      ctx.font = `600 22px ${FONT}`;
+      ctx.fillText('The storm that hunts. Collect its stars.', cx, 306);
+      ctx.fillText('Dodge the lightning. Land. Survive.', cx, 336);
+      ctx.fillStyle = '#dc2626';
+      ctx.font = `800 20px ${FONT}`;
+      ctx.fillText('STAGE 9 · FINAL STAGE', cx, 384);
+    } else {
+      const realm = view.introRealm;
+      ctx.fillStyle = '#0284c7';
+      ctx.font = `900 56px ${FONT}`;
+      ctx.fillText(realm.name, cx, 258);
+      ctx.fillStyle = PALETTE.text;
+      ctx.font = `600 22px ${FONT}`;
+      ctx.fillText(realm.flavor, cx, 306);
+      ctx.fillStyle = PALETTE.muted;
+      ctx.font = `600 18px ${FONT}`;
+      const s1 = view.introStage;
+      ctx.fillText(`Stage ${s1} · ${stageNameOf(s1)}  —  Stage ${s1 + 1} · ${stageNameOf(s1 + 1)}`, cx, 344);
+      ctx.fillStyle = '#0e7490';
+      ctx.font = `800 20px ${FONT}`;
+      ctx.fillText(`REALM ${Math.floor((s1 - 1) / 2) + 1} OF 4`, cx, 384);
+    }
+    ctx.fillStyle = '#0e7490';
+    ctx.font = `800 24px ${FONT}`;
+    const blink = 0.6 + 0.4 * Math.sin(view.time * 3);
+    ctx.globalAlpha = blink;
+    ctx.fillText('CLICK OR PRESS SPACE TO FLY', cx, 448);
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'left';
+  }
+
+  function stageNameOf(stage) {
+    const names = { 1: 'Meadow Run', 2: 'First Storm', 3: 'Peak Crossing', 4: 'Gale Pass', 5: 'Dusk Run', 6: 'Ember Coast', 7: 'Starlight Climb', 8: 'Summit Approach', 9: 'Thunderhead' };
+    return names[stage] ?? '';
+  }
+
+  /** Workshop: pick 1 of 3 relics. Cards come from the view (rects + ids). */
+  function drawWorkshop(view) {
+    ctx.textAlign = 'center';
+    const cx = FIELD.width / 2;
+    ctx.fillStyle = 'rgba(4, 8, 26, 0.55)';
+    ctx.fillRect(-40, -40, FIELD.width + 80, FIELD.height + 80);
+    ctx.fillStyle = PALETTE.textLight;
+    ctx.font = `900 52px ${FONT}`;
+    ctx.fillText('WORKSHOP', cx, 130);
+    ctx.fillStyle = 'rgba(238, 243, 255, 0.85)';
+    ctx.font = `600 20px ${FONT}`;
+    ctx.fillText('The realm is clear. Pick a relic — it stays with you to the summit.', cx, 168);
+    ctx.fillText('Click a card, or press 1, 2, 3.', cx, 196);
+    const offers = view.workshopOffers ?? [];
+    const cards = view.workshopCards ?? [];
+    offers.forEach((id, i) => {
+      const def = RELICS[id];
+      const c = cards[i];
+      if (!def || !c) return;
+      ctx.fillStyle = PALETTE.panel;
+      roundRect(ctx, c.x, c.y, c.w, c.h, 16);
+      ctx.fill();
+      ctx.strokeStyle = def.color;
+      ctx.lineWidth = 3;
+      roundRect(ctx, c.x, c.y, c.w, c.h, 16);
+      ctx.stroke();
+      // Letter icon in a coloured ring.
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+      ctx.beginPath();
+      ctx.arc(c.x + c.w / 2, c.y + 62, 34, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = def.color;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(c.x + c.w / 2, c.y + 62, 34, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = def.color;
+      ctx.font = `900 ${def.letter.length > 1 ? 24 : 34}px ${FONT}`;
+      ctx.fillText(def.letter, c.x + c.w / 2, c.y + 74);
+      ctx.fillStyle = PALETTE.text;
+      ctx.font = `800 20px ${FONT}`;
+      ctx.fillText(def.name, c.x + c.w / 2, c.y + 132);
+      ctx.fillStyle = PALETTE.muted;
+      ctx.font = `600 16px ${FONT}`;
+      ctx.fillText(def.blurb, c.x + c.w / 2, c.y + 162);
+      ctx.fillStyle = '#0e7490';
+      ctx.font = `800 16px ${FONT}`;
+      ctx.fillText(`PRESS ${i + 1}`, c.x + c.w / 2, c.y + 196);
+    });
     ctx.textAlign = 'left';
   }
 
@@ -763,7 +1119,7 @@ export function createRenderer(canvas) {
     ctx.fillText('PAUSED', FIELD.width / 2, 340);
     ctx.fillStyle = 'rgba(238, 243, 255, 0.8)';
     ctx.font = `600 18px ${FONT}`;
-    ctx.fillText('P resume · R restart level · M mute', FIELD.width / 2, 384);
+    ctx.fillText('P resume · R restart stage · M mute', FIELD.width / 2, 384);
     ctx.textAlign = 'left';
   }
 
@@ -773,7 +1129,7 @@ export function createRenderer(canvas) {
     ctx.textAlign = 'center';
     ctx.fillStyle = '#0e7490';
     ctx.font = `900 52px ${FONT}`;
-    ctx.fillText('LEVEL CLEAR!', cx, 284);
+    ctx.fillText('STAGE CLEAR!', cx, 284);
     ctx.fillStyle = PALETTE.text;
     ctx.font = `700 22px ${FONT}`;
     ctx.fillText(`Bonus +${view.clearBonus} · Score ${view.score}`, cx, 330);
@@ -784,40 +1140,67 @@ export function createRenderer(canvas) {
     }
     ctx.fillStyle = PALETTE.muted;
     ctx.font = `600 16px ${FONT}`;
-    ctx.fillText(`Race: ${view.raceRank === 1 ? '1st' : view.raceRank === 2 ? '2nd' : '3rd'} — next level incoming…`, cx, 394);
+    const next = view.levelIndex % 2 === 0 && view.levelIndex < 9
+      ? 'Workshop next — pick a relic!'
+      : view.levelIndex >= 9
+        ? 'The summit is yours…'
+        : 'Next stage incoming…';
+    ctx.fillText(`Race: ${view.raceRank === 1 ? '1st' : view.raceRank === 2 ? '2nd' : '3rd'} — ${next}`, cx, 394);
     ctx.textAlign = 'left';
   }
 
   function drawOver(view) {
     const cx = FIELD.width / 2;
-    drawPanel(cx - 300, 180, 600, 300);
+    drawPanel(cx - 300, 150, 600, 330);
     ctx.textAlign = 'center';
     if (view.won) {
       ctx.fillStyle = '#0e7490';
       ctx.font = `900 56px ${FONT}`;
-      ctx.fillText('SKY CHAMPION!', cx, 268);
+      ctx.fillText('SKY CHAMPION!', cx, 238);
+      ctx.fillStyle = PALETTE.text;
+      ctx.font = `700 22px ${FONT}`;
+      ctx.fillText('The Thunderhead is beaten.', cx, 278);
+      ctx.fillText('The campaign is yours.', cx, 304);
+      // Campaign summary: time, stars, relics, best race position.
+      const s = view.summary;
+      if (s) {
+        const mins = Math.floor(s.time / 60);
+        const secs = Math.floor(s.time % 60).toString().padStart(2, '0');
+        ctx.fillStyle = PALETTE.muted;
+        ctx.font = `600 20px ${FONT}`;
+        ctx.fillText(`TIME ${mins}:${secs}  ·  STARS ${s.stars}  ·  BEST RACE ${s.bestRank === 1 ? '1st' : s.bestRank === 2 ? '2nd' : '3rd'}`, cx, 332);
+        if (s.relics.length > 0) {
+          const letters = s.relics.map((id) => RELICS[id]?.letter ?? '?').join('  ');
+          ctx.fillText(`RELICS  ${letters}`, cx, 358);
+        } else {
+          ctx.fillText('RELICS  none — a bare-winged win!', cx, 358);
+        }
+      }
     } else {
       ctx.fillStyle = PALETTE.danger;
       ctx.font = `900 60px ${FONT}`;
-      ctx.fillText('RACE OVER', cx, 268);
+      ctx.fillText('RACE OVER', cx, 238);
+      ctx.fillStyle = PALETTE.text;
+      ctx.font = `700 24px ${FONT}`;
+      ctx.fillText(`Stage ${view.levelIndex} · ${view.stageName}`, cx, 282);
     }
     ctx.fillStyle = PALETTE.text;
     ctx.font = `700 28px ${FONT}`;
-    ctx.fillText(`SCORE ${view.score}`, cx, 322);
+    ctx.fillText(`SCORE ${view.score}`, cx, 396);
     if (view.newBest && view.score > 0) {
       ctx.fillStyle = '#b8860b';
       ctx.font = `800 22px ${FONT}`;
-      ctx.fillText('★ NEW BEST ★', cx, 360);
+      ctx.fillText('★ NEW BEST ★', cx, 432);
     } else {
       ctx.fillStyle = PALETTE.muted;
       ctx.font = `600 18px ${FONT}`;
-      ctx.fillText(`BEST ${view.best}`, cx, 360);
+      ctx.fillText(`BEST ${view.best}`, cx, 432);
     }
     ctx.fillStyle = '#0e7490';
     ctx.font = `800 22px ${FONT}`;
     const blink = 0.6 + 0.4 * Math.sin(view.time * 3);
     ctx.globalAlpha = blink;
-    ctx.fillText('PRESS SPACE TO FLY AGAIN', cx, 420);
+    ctx.fillText('PRESS SPACE TO FLY AGAIN', cx, 466);
     ctx.globalAlpha = 1;
     ctx.textAlign = 'left';
   }
@@ -829,16 +1212,18 @@ export function createRenderer(canvas) {
     const shx = view.shake ? (Math.random() - 0.5) * view.shake * 16 : 0;
     const shy = view.shake ? (Math.random() - 0.5) * view.shake * 16 : 0;
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * (offX + shx * scale), dpr * (offY + shy * scale));
-    drawBackground(view.time);
+    drawBackground(view, view.time);
     drawGround(view);
     if (view.level) {
       for (const p of view.level.vortexes) drawVortex(p, view.time);
       for (const s of view.level.stars) if (!s.taken) drawStarPickup(s, view.time);
+      for (const r of view.level.rings ?? []) if (!r.taken) drawRing(r, view.time);
       for (const p of view.level.powerups ?? []) if (!p.taken) drawPowerup(p, view.time);
       for (const a of view.level.storms) drawStormCell(a);
       for (const z of view.level.turbulence ?? []) drawTurbulence(z, view.time);
       for (const b of view.level.birds ?? []) drawBird(b, view.time);
     }
+    drawBoss(view);
     drawRivals(view);
     if (view.screen === 'aim' || view.screen === 'fly' || view.screen === 'takeoff') {
       drawTrajectory(view.trajectory);
@@ -861,8 +1246,11 @@ export function createRenderer(canvas) {
     drawParticles(view.particles);
     drawPopups(view.popups);
     drawPowerMeter(view);
-    if (view.screen !== 'title') drawHud(view);
+    drawFuel(view);
+    if (view.screen !== 'title' && view.screen !== 'intro' && view.screen !== 'workshop') drawHud(view);
     if (view.screen === 'title') drawTitle(view);
+    else if (view.screen === 'intro') drawIntro(view);
+    else if (view.screen === 'workshop') drawWorkshop(view);
     else if (view.hint) drawHint(view.hint, true);
     else if (view.screen === 'aim') {
       if (view.levelIndex === 1) drawHint('Drag to aim — the dotted line is your takeoff. Release to fly!');
@@ -872,7 +1260,7 @@ export function createRenderer(canvas) {
     } else if (view.screen === 'takeoff') drawHint('TAKEOFF!');
     else if (view.screen === 'fly') {
       if (view.stripArmed) drawHint('LAND ON THE GREEN STRIP!', true);
-      else drawHint('R restart level · P pause · M mute');
+      else drawHint('R restart stage · P pause · M mute');
     } else if (view.screen === 'paused') drawPaused();
     else if (view.screen === 'clear') drawClear(view);
     else if (view.screen === 'over') drawOver(view);

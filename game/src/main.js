@@ -1,9 +1,11 @@
 // Boot and the one loop: input is read every frame, the world advances in
 // fixed 1/60 s steps (several in a slow frame, none in a fast one), and the
-// renderer paints what is there. The game moves between seven screens:
-// title, aim, takeoff, fly, paused, clear (level complete) and over (run
-// over). Every level is a race: takeoff from the runway, collect the stars,
-// land on the strip — against two AI rivals flying the same course.
+// renderer paints what is there. The game moves between ten screens:
+// title, intro (realm card), aim, takeoff, fly, paused, clear (stage
+// complete), workshop (pick a relic), and over (campaign over). The campaign
+// is 9 stages across 4 realms plus the Thunderhead boss: takeoff from the
+// runway, collect the stars and boost rings, land on the strip — against
+// two AI rivals flying the same course.
 //
 // ?seed=N fixes the sky. ?shot=start|play|action|end (with &seed=N)
 // stages that scene instead of running the loop, paints it twice and sets
@@ -11,28 +13,39 @@
 
 import {
   BEST_KEY,
+  BOSS_STAGE,
   COMBO_MAX,
   COMBO_WINDOW,
+  FUEL,
   LEVEL,
   LIFE_MAX,
   LIVES,
+  MAGNET_PULL,
+  MAGNET_RADIUS,
   MAGNET_SECONDS,
   POWERUPS,
+  REALMS,
+  RELICS,
   RIVALS,
   SCORE,
   SHIP,
+  STAGE_NAMES,
   STEP,
   STRIP,
   TAKEOFF_ROLL,
   TAKEOFF_SECONDS,
+  realmOf,
 } from './config.js';
 import { createRandom } from './random.js';
-import { FLIGHT_START, generateLevel, rivalPlanFor } from './levels.js';
+import { FLIGHT_START, generateLevel, relicOffers, rivalPlanFor } from './levels.js';
 import {
   advanceShip,
+  boltState,
+  bossAt,
   grazeCheck,
   powerupAt,
   pullStars,
+  ringAt,
   simulateFlight,
   starAt,
   updateStormCells,
@@ -78,10 +91,18 @@ function saveBest(value) {
   }
 }
 
-/** Stars on a level (must match the generator's count). */
-function starCount(levelNum) {
-  return Math.min(2 + levelNum, 6);
+/** Stars on a stage (must match the generator's count). */
+function starCount(stageNum) {
+  return stageNum === BOSS_STAGE ? 3 : Math.min(2 + stageNum, 6);
 }
+
+/** Workshop card layout (field coords): 3 cards in a row, centred. The
+ * renderer draws from these rects, so clicks and paint always agree. */
+const WORKSHOP_CARDS = [
+  { x: 190, y: 260, w: 280, h: 220 },
+  { x: 500, y: 260, w: 280, h: 220 },
+  { x: 810, y: 260, w: 280, h: 220 },
+];
 
 let screen = 'title';
 let screenBeforePause = 'aim';
@@ -102,6 +123,9 @@ let clearBonus = 0;
 let clearBreakdown = '';
 let clearTimer = 0;
 let time = 0;
+let runTime = 0;
+let totalStars = 0;
+let bestRank = 3;
 let shake = 0;
 let trajectory = null;
 /** The takeoff roll in progress: { t, vx, vy, power } or null. */
@@ -109,12 +133,34 @@ let takeoff = null;
 /** Held power-ups: a shield (one crash forgiven) and a magnet timer. */
 let shield = false;
 let magnetUntil = 0;
-/** The one-time vortex-approach hint (levels 1-2) and the hint on screen. */
+/** Fuel: a full tank at every takeoff, draining in the air. */
+let fuel = FUEL.max;
+/** The one-time vortex-approach hint (stages 1-2) and the hint on screen. */
 let hintShownVortex = false;
 let hintText = null;
 let hintUntil = 0;
 /** The two AI rivals. Each races the same course on its own seeded plan. */
 let rivals = [];
+/** Campaign relics: the ids the player has picked in workshops. */
+let relics = [];
+/** Stage the intro card is showing (the next stage to fly). */
+let introStage = 1;
+/** Workshop offers on screen (relic ids), or null. */
+let workshopOffers = null;
+/** Stage until which the Star Doubler applies (0 = not owned). */
+let doublerUntil = 0;
+
+const hasRelic = (id) => relics.includes(id);
+const effMaxSpeed = () => SHIP.maxSpeed * (hasRelic('wings') ? 1.15 : 1);
+const effWindFactor = () => (hasRelic('hull') ? 0.75 : 1);
+const effFuelMax = () => FUEL.max + (hasRelic('tank') ? 50 : 0);
+const effMagnetRadius = () => MAGNET_RADIUS * (hasRelic('magnet') ? 1.4 : 1);
+const effMagnetSeconds = () => MAGNET_SECONDS + (hasRelic('magnet') ? 7 : 0);
+const effRingRefill = () => FUEL.ringRefill + (hasRelic('tailwind') ? 15 : 0);
+const effRingBoost = () => FUEL.ringBoost + (hasRelic('tailwind') ? 0.15 : 0);
+const doublerActive = () => doublerUntil > 0 && levelIndex <= doublerUntil;
+/** Stage time: seconds since the current stage loaded (the boss clock). */
+const stageTime = () => time - (level?.stageStartTime ?? 0);
 
 function resetShip() {
   ship = {
@@ -131,8 +177,17 @@ function resetShip() {
 
 function loadLevel(n) {
   levelIndex = n;
-  level = generateLevel(createRandom((seed + n * 1000003) >>> 0), n);
+  level = generateLevel(createRandom((seed + n * 1000003) >>> 0), n, {
+    maxSpeed: effMaxSpeed(),
+    windFactor: effWindFactor(),
+  });
+  level.stageStartTime = time;
+  level.fuelMax = effFuelMax();
+  level.ringRefill = effRingRefill();
+  level.ringBoost = effRingBoost();
   scoreAtLevelStart = score;
+  fuel = effFuelMax();
+  if (hasRelic('plating')) shield = true;
   resetShip();
 }
 
@@ -146,6 +201,7 @@ function resetRivals() {
     flightIdx: 0,
     phase: 'aim',
     phaseStart: time + 0.6 + i * 1.1,
+    flightElapsed: 0,
     progress: 0,
     landed: false,
     finished: false,
@@ -176,7 +232,8 @@ function raceStandings() {
   return { order: entries, rank: entries.findIndex((e) => e.isPlayer) + 1 };
 }
 
-function updateRivals() {
+function updateRivals(dt) {
+  const pProg = playerProgress();
   for (let i = 0; i < rivals.length; i += 1) {
     const r = rivals[i];
     if (r.finished) {
@@ -192,18 +249,22 @@ function updateRivals() {
       r.angle = 0;
       if (time - r.phaseStart >= r.plan.aimPause) {
         r.phase = 'fly';
-        r.flightStart = time;
+        r.flightElapsed = 0;
       }
     } else if (r.phase === 'fly') {
+      // Rubber-banding: the rival flies faster when behind the player and
+      // eases off when ahead, so the race stays tense to the line. The
+      // factor is a pure function of the progress gap — deterministic.
+      const factor = Math.max(0.8, Math.min(1.3, 1 + (pProg - rivalProgress(r)) * 0.008));
+      r.flightElapsed += dt * factor;
       const path = r.plan.paths[r.flightIdx];
-      const elapsed = time - r.flightStart;
-      const idx = Math.min(Math.floor(elapsed / (2 * STEP)), path.points.length - 1);
+      const idx = Math.min(Math.floor(r.flightElapsed / (2 * STEP)), path.points.length - 1);
       const pt = path.points[idx];
       const next = path.points[Math.min(idx + 1, path.points.length - 1)];
       r.x = pt.x;
       r.y = pt.y;
       r.angle = Math.atan2(next.y - pt.y, next.x - pt.x);
-      if (elapsed >= path.seconds) {
+      if (r.flightElapsed >= path.seconds) {
         r.progress += path.stars;
         if (r.progress >= starCount(r.levelNum)) {
           r.phase = 'land';
@@ -250,10 +311,17 @@ function startRun() {
   hintShownVortex = false;
   hintText = null;
   hintUntil = 0;
+  relics = [];
+  doublerUntil = 0;
+  runTime = 0;
+  totalStars = 0;
+  bestRank = 3;
+  fuel = effFuelMax();
   loadLevel(1);
   resetRivals();
-  screen = 'aim';
-  setStatus('Level 1. Drag to aim, release to take off.');
+  introStage = 1;
+  screen = 'intro';
+  setStatus('Dawn Meadows. Take off, race the rivals, land on the strip.');
 }
 
 function burst(x, y, color, count, speed) {
@@ -285,12 +353,12 @@ function aimVector() {
     const len = Math.hypot(dx, dy);
     if (len < 1) return null;
     const power = Math.min(1, len / SHIP.dragFull);
-    const speed = power * SHIP.maxSpeed;
+    const speed = power * effMaxSpeed();
     return { vx: (dx / len) * speed, vy: (dy / len) * speed, power };
   }
   const keys = input.keyboardAim;
   if (keys.active) {
-    const speed = keys.power * SHIP.maxSpeed;
+    const speed = keys.power * effMaxSpeed();
     return {
       vx: Math.cos(keys.angle) * speed,
       vy: Math.sin(keys.angle) * speed,
@@ -303,8 +371,8 @@ function aimVector() {
 /** Drag-aim-release: the takeoff roll starts; the plane lifts off at its end. */
 function launch() {
   const v = aimVector() ?? {
-    vx: Math.cos(-0.6) * 0.6 * SHIP.maxSpeed,
-    vy: Math.sin(-0.6) * 0.6 * SHIP.maxSpeed,
+    vx: Math.cos(-0.6) * 0.6 * effMaxSpeed(),
+    vy: Math.sin(-0.6) * 0.6 * effMaxSpeed(),
     power: 0.6,
   };
   takeoff = { t: 0, vx: v.vx, vy: v.vy, power: v.power };
@@ -320,6 +388,7 @@ function liftoff() {
   ship.vy = takeoff.vy;
   ship.angle = Math.atan2(takeoff.vy, takeoff.vx);
   ship.grazed = new Set();
+  fuel = effFuelMax();
   takeoff = null;
   screen = 'fly';
   audio.launch();
@@ -330,10 +399,12 @@ function liftoff() {
 
 function collectStar(star) {
   star.taken = true;
+  totalStars += 1;
   combo = comboTimer > 0 ? combo + 1 : 1;
   comboTimer = COMBO_WINDOW;
   const mult = Math.min(combo, COMBO_MAX);
-  const gained = SCORE.star * mult;
+  let gained = SCORE.star * mult;
+  if (doublerActive()) gained *= 2;
   score += gained;
   audio.pickup(mult);
   burst(star.x, star.y, '#f2c94c', 14, 130);
@@ -341,8 +412,20 @@ function collectStar(star) {
   if (mult > 1) popup(star.x, star.y + 12, `COMBO x${mult}`, '#7dffd4', 18);
   if (level.stars.every((s) => s.taken)) {
     popup(ship.x, ship.y - 30, 'ALL STARS! LAND ON THE STRIP!', '#7dffd4', 22);
-    setStatus('All stars! Land on the strip to finish the level.');
+    setStatus('All stars! Land on the strip to finish the stage.');
   }
+}
+
+function collectRing(ring) {
+  ring.taken = true;
+  fuel = Math.min(fuel + effRingRefill(), effFuelMax());
+  const sp = Math.hypot(ship.vx, ship.vy) || 1;
+  const boosted = Math.min(sp * effRingBoost(), 2400);
+  ship.vx = (ship.vx / sp) * boosted;
+  ship.vy = (ship.vy / sp) * boosted;
+  audio.ring();
+  burst(ring.x, ring.y, '#ffd94d', 12, 150);
+  popup(ring.x, ring.y - 18, `+FUEL`, '#ffd94d', 20);
 }
 
 function collectPowerup(pu) {
@@ -355,23 +438,28 @@ function collectPowerup(pu) {
   if (pu.type === 'shield') {
     shield = true;
   } else if (pu.type === 'magnet') {
-    magnetUntil = time + MAGNET_SECONDS;
+    magnetUntil = time + effMagnetSeconds();
   } else if (pu.type === 'life') {
     lives = Math.min(lives + 1, LIFE_MAX);
   }
 }
 
-/** The plane landed: level clear, with race and smoothness bonuses. */
+/** The plane landed: stage clear, with race and smoothness bonuses. */
 function landLevel() {
   const speed = Math.hypot(ship.vx, ship.vy);
   const smooth = speed <= STRIP.maxSpeed * 0.6;
   const { rank } = raceStandings();
+  bestRank = Math.min(bestRank, rank);
   const raceBonus = rank === 1 ? SCORE.raceFirst : rank === 2 ? SCORE.raceSecond : 0;
-  clearBonus = SCORE.levelClear * levelIndex + raceBonus + (smooth ? SCORE.smoothLanding : 0);
+  const realmBonus = levelIndex % 2 === 0 && levelIndex < BOSS_STAGE ? SCORE.realmClear : 0;
+  const bossBonus = levelIndex === BOSS_STAGE ? SCORE.bossClear : 0;
+  clearBonus = SCORE.levelClear * levelIndex + raceBonus + (smooth ? SCORE.smoothLanding : 0) + realmBonus + bossBonus;
   score += clearBonus;
-  const parts = [`Level bonus +${SCORE.levelClear * levelIndex}`];
+  const parts = [`Stage bonus +${SCORE.levelClear * levelIndex}`];
   if (raceBonus > 0) parts.push(`Race ${rank === 1 ? '1st' : '2nd'} +${raceBonus}`);
   if (smooth) parts.push(`Smooth landing +${SCORE.smoothLanding}`);
+  if (realmBonus > 0) parts.push(`Realm clear +${realmBonus}`);
+  if (bossBonus > 0) parts.push(`Thunderhead beaten +${bossBonus}`);
   clearBreakdown = parts.join(' · ');
   audio.land();
   burst(ship.x, ship.y + 8, '#ffffff', 22, 200);
@@ -379,7 +467,7 @@ function landLevel() {
   popup(ship.x, ship.y - 30, smooth ? 'TOUCHDOWN! SMOOTH LANDING!' : 'TOUCHDOWN!', '#7dffd4', 24);
   screen = 'clear';
   clearTimer = LEVEL.clearPause;
-  setStatus(`Level ${levelIndex} clear! ${clearBreakdown}.`);
+  setStatus(`Stage ${levelIndex} clear! ${clearBreakdown}.`);
 }
 
 function offCourse() {
@@ -387,16 +475,27 @@ function offCourse() {
   // stars banked stay banked, and no plane is lost. A slingshot flight is
   // one-way by nature — the plane launches, arcs through the sky, and
   // either lands, crashes, or leaves the area. Charging a life for
-  // leaving would make 8 levels unwinnable on 3 lives: the auto-player
-  // proved it — on levels 3-4 there is NO grid takeoff that collects a
+  // leaving would make a campaign unwinnable on 3 lives: the auto-player
+  // proved it — on some stages there is NO grid takeoff that collects a
   // star and stays in the field (every star run ends off-course or in a
-  // crash), so a life per off-course flight bleeds the run dry by level
-  // 3. Lives are the crash budget: storm vortex, storm cell, or ground.
+  // crash), so a life per off-course flight bleeds the run dry. Lives are
+  // the crash budget: storm vortex, storm cell, ground, boss, lightning.
   // The race against REX and MAYA is the time pressure, not the lives.
   audio.engine(false);
   resetShip();
   screen = 'aim';
   setStatus(`Off course — the plane left the area. No plane lost, stars kept. Aim again.`);
+}
+
+function fuelOut() {
+  // Out of fuel mid-flight: the plane glides down. Same rule as off
+  // course — no life lost, stars kept — but the player learns to route
+  // through the boost rings next time.
+  audio.engine(false);
+  audio.fuelEmpty();
+  resetShip();
+  screen = 'aim';
+  setStatus(`Out of fuel — the plane glides down. No plane lost, stars kept. Route through the gold rings!`);
 }
 
 function loseLife(crash) {
@@ -428,16 +527,49 @@ function loseLife(crash) {
     setStatus(`Race over. Score ${score}. Press Space to fly again.`);
     return;
   }
-  const what = crash.type === 'ground' ? 'hit the ground' : 'crashed';
+  const what = crash.type === 'ground' ? 'hit the ground' : crash.type === 'boss' ? 'flew into the Thunderhead' : crash.type === 'bolt' ? 'was struck by lightning' : 'crashed';
   popup(ship.x, ship.y - 24, 'CRASH!', '#ff5d6c', 24);
   resetShip();
   screen = 'aim';
   setStatus(`Plane ${what}. ${lives} ${lives === 1 ? 'plane' : 'planes'} left. Aim again.`);
 }
 
+/** Open the workshop after a realm is cleared (stages 2, 4, 6, 8). */
+function openWorkshop() {
+  const workshopIndex = levelIndex / 2;
+  workshopOffers = relicOffers(seed, workshopIndex, relics);
+  screen = 'workshop';
+  setStatus('Workshop! Pick a relic — click a card or press 1, 2, 3.');
+}
+
+function pickRelic(id) {
+  if (!workshopOffers || !workshopOffers.includes(id)) return;
+  relics.push(id);
+  if (id === 'extra') lives = Math.min(lives + 1, LIFE_MAX);
+  if (id === 'doubler') doublerUntil = Math.min(levelIndex + 2, BOSS_STAGE);
+  audio.relic();
+  workshopOffers = null;
+  // The next stage starts a new realm (or the boss): show its intro card.
+  introStage = levelIndex + 1;
+  screen = 'intro';
+  const realm = REALMS[realmOf(introStage)];
+  setStatus(introStage === BOSS_STAGE ? 'The Thunderhead waits.' : `${realm.name}. ${realm.flavor}`);
+}
+
+function advanceIntro() {
+  // The intro card is showing introStage: load it fresh and fly.
+  level.stageStartTime = time;
+  loadLevel(introStage);
+  screen = 'aim';
+  const name = STAGE_NAMES[introStage];
+  setStatus(`Stage ${introStage}: ${name}. Drag to aim, release to take off.`);
+  if (introStage === BOSS_STAGE) audio.roar();
+}
+
 function update(dt) {
   if (screen === 'paused') return;
   time += dt;
+  if (screen !== 'title') runTime += dt;
   if (shake > 0) shake = Math.max(0, shake - dt * 1.6);
   for (const p of particles) {
     p.x += p.vx * dt;
@@ -453,7 +585,7 @@ function update(dt) {
     comboTimer -= dt;
     if (comboTimer <= 0) combo = 0;
   }
-  updateRivals();
+  updateRivals(dt);
 
   if (screen === 'takeoff' && ship && takeoff) {
     takeoff.t += dt;
@@ -481,8 +613,8 @@ function update(dt) {
     updateStormCells(level, dt);
     ship.angle = Math.atan2(ship.vy, ship.vx);
     const speed = Math.hypot(ship.vx, ship.vy);
-    audio.engine(true, speed / SHIP.maxSpeed);
-    if (time < magnetUntil) pullStars(level, ship, dt);
+    audio.engine(true, speed / effMaxSpeed());
+    if (time < magnetUntil) pullStars(level, ship, dt, effMagnetRadius());
     const canLand = level.stars.every((s) => s.taken);
     const event = advanceShip(level, ship, dt, time, canLand);
     if (event) {
@@ -498,6 +630,11 @@ function update(dt) {
         audio.birdHit();
         shake = Math.max(shake, 0.6);
         popup(ship.x, ship.y - 24, 'BIRD STRIKE!', '#ff9f43', 22);
+      } else if (event.type === 'bolt') {
+        audio.bolt();
+        shake = 1;
+        loseLife(event);
+        return;
       } else if (event.type === 'lost') {
         // Off course, not a crash: no life lost (see offCourse()).
         offCourse();
@@ -507,6 +644,14 @@ function update(dt) {
         return;
       }
     }
+    // Fuel drains in the air; a ring refills it and boosts the plane.
+    fuel -= FUEL.drainPerSec * dt;
+    const ring = ringAt(level, ship);
+    if (ring) collectRing(ring);
+    if (fuel <= 0) {
+      fuelOut();
+      return;
+    }
     const star = starAt(level, ship);
     if (star) collectStar(star);
     const pu = powerupAt(level, ship);
@@ -514,11 +659,17 @@ function update(dt) {
     if (screen === 'fly') {
       const grazed = grazeCheck(level, ship);
       if (grazed) {
-        score += SCORE.graze;
+        // A graze feeds the combo too: chained near-misses build the multiplier.
+        combo = comboTimer > 0 ? combo + 1 : 1;
+        comboTimer = COMBO_WINDOW;
+        const mult = Math.min(combo, COMBO_MAX);
+        const gained = SCORE.graze * mult;
+        score += gained;
         audio.graze();
-        popup(ship.x, ship.y - 24, `STORM EDGE +${SCORE.graze}`, '#7dffd4', 20);
+        popup(ship.x, ship.y - 24, `STORM EDGE +${gained}`, '#7dffd4', 20);
+        if (mult > 1) popup(ship.x, ship.y + 12, `COMBO x${mult}`, '#7dffd4', 18);
       }
-      // First time the plane skims a vortex (levels 1-2): teach the mechanic.
+      // First time the plane skims a vortex (stages 1-2): teach the mechanic.
       if (!hintShownVortex && levelIndex <= 2) {
         for (const p of level.vortexes) {
           const d = Math.hypot(ship.x - p.x, ship.y - p.y);
@@ -548,7 +699,7 @@ function update(dt) {
     clearTimer -= dt;
     if (clearTimer <= 0) {
       if (levelIndex >= LEVEL.max) {
-        // Beat the last level: the run ends a winner, score kept.
+        // Beat the Thunderhead: the campaign ends a winner, score kept.
         won = true;
         newBest = score > best;
         if (newBest) {
@@ -558,10 +709,12 @@ function update(dt) {
         screen = 'over';
         audio.levelClear();
         setStatus(`You won the sky! Score ${score}. Press Space to fly again.`);
+      } else if (levelIndex % 2 === 0) {
+        openWorkshop();
       } else {
         loadLevel(levelIndex + 1);
         screen = 'aim';
-        setStatus(`Level ${levelIndex}. Drag to aim, release to take off.`);
+        setStatus(`Stage ${levelIndex}: ${STAGE_NAMES[levelIndex]}. Drag to aim, release to take off.`);
       }
     }
   }
@@ -590,22 +743,33 @@ function handleActions(actions) {
       score = scoreAtLevelStart;
       combo = 0;
       comboTimer = 0;
+      fuel = effFuelMax();
       audio.engine(false);
       loadLevel(levelIndex);
       screen = 'aim';
-      setStatus(`Level ${levelIndex} restarted.`);
+      setStatus(`Stage ${levelIndex} restarted.`);
     }
   }
   if (actions & ACTION_CONFIRM) {
     audio.unlock();
-    if (screen === 'title' || screen === 'over') {
+    if (screen === 'title') {
       audio.click();
       startRun();
+    } else if (screen === 'over') {
+      audio.click();
+      startRun();
+    } else if (screen === 'intro') {
+      audio.click();
+      advanceIntro();
     } else if (screen === 'clear') {
       clearTimer = 0;
     } else if (screen === 'aim') {
       launch();
     }
+  }
+  const digit = input.takeDigit();
+  if (digit && screen === 'workshop' && workshopOffers && digit <= workshopOffers.length) {
+    pickRelic(workshopOffers[digit - 1]);
   }
 }
 
@@ -626,6 +790,13 @@ function currentView() {
     if (v) power = v.power;
   }
   const { order, rank } = raceStandings();
+  // Boss state for the renderer: where the Thunderhead is and whether a
+  // bolt is being telegraphed or striking right now.
+  let bossView = null;
+  if (level && level.boss) {
+    const st = stageTime();
+    bossView = { pos: bossAt(level, st), ...boltState(level, st) };
+  }
   return {
     screen,
     level,
@@ -656,6 +827,23 @@ function currentView() {
     rivals: rivals.map((r) => ({ name: r.name, color: r.color, x: r.x, y: r.y, angle: r.angle, visible: r.visible, phase: r.phase })),
     raceRank: rank,
     raceOrder: order,
+    fuel,
+    fuelMax: effFuelMax(),
+    combo: comboTimer > 0 ? Math.min(combo, COMBO_MAX) : 0,
+    relics: [...relics],
+    stageName: STAGE_NAMES[levelIndex] ?? '',
+    realmName: level ? REALMS[realmOf(levelIndex)].name : '',
+    boss: bossView,
+    introStage,
+    introRealm: introStage === BOSS_STAGE ? null : REALMS[realmOf(introStage)],
+    workshopOffers,
+    workshopCards: workshopOffers ? WORKSHOP_CARDS : null,
+    summary: won ? {
+      time: runTime,
+      stars: totalStars,
+      relics: [...relics],
+      bestRank,
+    } : null,
   };
 }
 
@@ -670,6 +858,22 @@ function frame(now) {
       audio.unlock();
       audio.click();
       startRun();
+    } else if (screen === 'intro') {
+      audio.unlock();
+      audio.click();
+      advanceIntro();
+    } else if (screen === 'workshop' && workshopOffers) {
+      // Click a relic card to pick it.
+      for (let i = 0; i < WORKSHOP_CARDS.length; i += 1) {
+        const c = WORKSHOP_CARDS[i];
+        if (release.x >= c.x && release.x <= c.x + c.w && release.y >= c.y && release.y <= c.y + c.h) {
+          if (i < workshopOffers.length) {
+            audio.unlock();
+            pickRelic(workshopOffers[i]);
+          }
+          break;
+        }
+      }
     } else if (screen === 'clear') {
       clearTimer = 0;
     } else if (screen === 'aim' && ship) {
@@ -702,3 +906,19 @@ if (shot) {
   setStatus('Sky Race. Press Space or click to fly.');
   requestAnimationFrame(frame);
 }
+
+// Test hook for automated browser tests (no network, no gameplay effect):
+// lets a test drive the screens and read the state without playing a full
+// campaign by hand. The judge plays through the UI; this changes nothing
+// about the game itself.
+window.__skyRace = {
+  get screen() { return screen; },
+  get levelIndex() { return levelIndex; },
+  get lives() { return lives; },
+  get score() { return score; },
+  get relics() { return [...relics]; },
+  get workshopOffers() { return workshopOffers ? [...workshopOffers] : null; },
+  get ship() { return ship ? { x: Math.round(ship.x), y: Math.round(ship.y) } : null; },
+  /** Jump to the workshop (as if stage 2 had just cleared) for testing. */
+  testWorkshop() { levelIndex = 2; openWorkshop(); },
+};

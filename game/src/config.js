@@ -2,10 +2,12 @@
 // 1280x720 logical area; the renderer scales it to the window, so no rule
 // below depends on the screen size.
 //
-// SKY RACE (v3): the slingshot is a takeoff. The plane sits on a runway at
-// the bottom-left, drag-aim-release launches it (the takeoff roll), it flies
-// the course collecting stars, and it must LAND on the strip at the
-// bottom-right once every star is collected.
+// SKY RACE (v4): a 9-stage campaign across 4 named realms plus a boss
+// stage. The slingshot is a takeoff: the plane sits on a runway at the
+// bottom-left, drag-aim-release launches it (the takeoff roll), it flies
+// the course collecting stars and boost rings, and it must LAND on the strip
+// at the bottom-right once every star is collected. Between realms the
+// player picks 1 of 3 relics in the workshop; the rivals rubber-band.
 
 export const FIELD = { width: 1280, height: 720 };
 
@@ -89,13 +91,17 @@ export const SCORE = {
   raceSecond: 50,
   /** Bonus for a gentle landing (arrival speed under this fraction of the cap). */
   smoothLanding: 100,
+  /** Bonus for clearing the second stage of a realm. */
+  realmClear: 400,
+  /** Bonus for beating the Thunderhead. */
+  bossClear: 1000,
 };
 
 /** How far outside the field a plane may drift before it is lost in the sky.
  * Small on purpose: a flight that leaves the visible field ends quickly
  * instead of sailing off-screen for seconds, which keeps the pace tight. */
 export const LOST_MARGIN = 150;
-/** Distance that counts as a near miss past a vortex (past its edge). */
+/** Distance that counts as a near miss past a vortex (past its surface). */
 export const GRAZE_BAND = 42;
 
 /** A bird strike costs this fraction of the plane's speed (not a life). */
@@ -103,15 +109,121 @@ export const BIRD_SLOW = 0.35;
 /** Seconds a bird stays harmless after hitting the plane (so one bird cannot hit twice in a row). */
 export const BIRD_COOLDOWN = 2;
 
+/** Fuel: the second verb. A flight starts with a full tank; it drains in
+ * the air. Boost rings refill it and kick the plane faster. Running dry
+ * ends the flight (no life lost — same off-course rule as v3 — but the
+ * stars banked stay banked). The drain is tuned so a direct star run
+ * (2-3 s) is free, a looping slingshot (5-7 s) needs a ring. */
+export const FUEL = {
+  max: 100,
+  drainPerSec: 14,
+  ringRefill: 35,
+  ringBoost: 1.3,
+  /** Pickup radius of a boost ring. */
+  ringRadius: 26,
+};
+
+/** The campaign: 4 realms of 2 stages, then the boss stage. */
+export const STAGES = 9;
+export const BOSS_STAGE = 9;
+export const BOSS_NAME = 'THUNDERHEAD';
+
+/** Stage names, 1-based. */
+export const STAGE_NAMES = {
+  1: 'Meadow Run',
+  2: 'First Storm',
+  3: 'Peak Crossing',
+  4: 'Gale Pass',
+  5: 'Dusk Run',
+  6: 'Ember Coast',
+  7: 'Starlight Climb',
+  8: 'Summit Approach',
+  9: 'Thunderhead',
+};
+
+/** Realms: stages 1-2, 3-4, 5-6, 7-8. Each has its own sky, ground, and
+ * obstacle mix. The boss stage flies the Night Summit sky, darker. */
+export const REALMS = [
+  {
+    name: 'DAWN MEADOWS',
+    flavor: 'First light over the meadows. Learn the sky.',
+    skyTop: '#5fb4f0', skyMid: '#9fd8f8', skyHorizon: '#dff4fd',
+    ground: '#5da24a', groundDark: '#4a8539',
+    text: '#12233a', muted: '#5b6b7f', night: false,
+  },
+  {
+    name: 'STORM PEAKS',
+    flavor: 'The peaks breed storms. Ride the wind, don’t fight it.',
+    skyTop: '#6f87b8', skyMid: '#9fb2d4', skyHorizon: '#dde6f2',
+    ground: '#5f7050', groundDark: '#4a5a3e',
+    text: '#12233a', muted: '#5b6b7f', night: false,
+  },
+  {
+    name: 'TWILIGHT COAST',
+    flavor: 'Dusk over the water. The wind turns strange here.',
+    skyTop: '#e08a5a', skyMid: '#f0b27e', skyHorizon: '#ffe9d2',
+    ground: '#3f7a68', groundDark: '#2f5f52',
+    text: '#2a1a12', muted: '#6b5a4a', night: false,
+  },
+  {
+    name: 'NIGHT SUMMIT',
+    flavor: 'Cold stars, darker storms. Only the best land here.',
+    skyTop: '#141d38', skyMid: '#2a3558', skyHorizon: '#5d6f92',
+    ground: '#2c4636', groundDark: '#223829',
+    text: '#eef3ff', muted: '#9fb0cc', night: true,
+  },
+];
+
+/** Which realm a stage belongs to (0-based). Stage 9 is the boss. */
+export function realmOf(stage) {
+  return Math.min(Math.floor((stage - 1) / 2), REALMS.length - 1);
+}
+
+/** The Thunderhead boss: a giant storm entity that drifts across the
+ * field and throws lightning. Bolts strike fixed columns on a fixed
+ * schedule (a pure function of stage time), telegraphed 1.2 s ahead, so a
+ * launch can be proven safe before it is flown. */
+export const BOSS = {
+  radius: 105,
+  driftX: 190,
+  driftY: 65,
+  /** Seconds per drift cycle (x and y use different periods so the path never repeats exactly). */
+  driftPeriodX: 18,
+  driftPeriodY: 23,
+  /** First bolt at stage time 3 s, then one every 5 s. */
+  boltFirst: 3,
+  boltPeriod: 5,
+  boltTelegraph: 1.2,
+  /** The bolt's strike column is this wide (px). */
+  boltWidth: 70,
+  /** How long a strike flash lasts (s). */
+  boltFlash: 0.18,
+};
+
+/** Workshop relics: pick 1 of 3 after each realm. Each is a real effect;
+ * the letter is the icon drawn on its card and in the HUD. */
+export const RELICS = {
+  tank: { letter: 'F', color: '#f2a007', name: 'BIG TANK', blurb: '+50 max fuel' },
+  magnet: { letter: 'M', color: '#ff7fb0', name: 'MAGNET COIL', blurb: 'Magnet +40% reach, +7s' },
+  plating: { letter: 'S', color: '#5df2ff', name: 'SHIELD PLATING', blurb: 'Start every level shielded' },
+  wings: { letter: 'W', color: '#7dffd4', name: 'SWIFT WINGS', blurb: '+15% top speed' },
+  hull: { letter: 'H', color: '#b39ddb', name: 'STORM HULL', blurb: 'Storm winds 25% weaker' },
+  tailwind: { letter: '»', color: '#ffd94d', name: 'TAILWIND', blurb: 'Rings: +50% boost, +15 fuel' },
+  extra: { letter: '+', color: '#7dffd4', name: 'EXTRA PLANE', blurb: '+1 plane, max 5' },
+  doubler: { letter: '×2', color: '#f2c94c', name: 'STAR DOUBLER', blurb: 'Stars worth 2× this realm' },
+};
+export const RELIC_IDS = Object.keys(RELICS);
+
 export const LEVEL = {
-  /** Last level: vortex and storm-cell counts stop growing there. */
-  max: 8,
+  /** Last stage: the boss. */
+  max: 9,
   /** Seconds of the level-clear fanfare before the next level starts. */
   clearPause: 1.6,
 };
 
 /** The two AI rivals: names and colours. They race the same course on
- * seeded, deterministic flight plans — no network, no other humans. */
+ * seeded, deterministic flight plans — no network, no other humans. In v4
+ * they rubber-band: faster when behind, easing off when ahead. */
 export const RIVALS = [
   { name: 'REX', color: '#ff7a3c', dark: '#a03d12' },
   { name: 'MAYA', color: '#b678ff', dark: '#5e2fa0' },

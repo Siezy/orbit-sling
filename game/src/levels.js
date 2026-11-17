@@ -1,15 +1,30 @@
-// Level generation: a seeded sky of storm vortexes, stars, storm cells,
-// turbulence zones, birds and rival flight plans.
+// Level generation: a seeded sky of storm vortexes, stars, boost rings,
+// storm cells, turbulence zones, birds, rival flight plans — and, on the
+// last stage, the Thunderhead boss.
 //
 // Every star is placed ON a real flight path, so every level is beatable by
 // construction: pick a random takeoff (angle, power), fly it forward under
-// the vortexes' wind, and put the star on that path. The player can find the
-// same takeoff again with the trajectory preview the game draws while aiming.
-// Stars chain along shared flight corridors (v2's balance fix): one good
-// takeoff can bank several stars, which is what makes 8 levels possible on
-// 3 lives.
+// the vortexes' wind, and put the star on that path. The player can find
+// the same takeoff again with the trajectory preview the game draws while
+// aiming. Stars chain along shared flight corridors (v2's balance fix): one
+// good takeoff can bank several stars, which is what makes a campaign
+// possible on 3 lives. Rings sit on the same corridors, early in the
+// flight, so a ring never costs a detour.
 
-import { FIELD, POWERUP_CYCLE, STRIP, TAKEOFF_ROLL, VORTEX_STYLES } from './config.js';
+import {
+  BOSS,
+  BOSS_STAGE,
+  FIELD,
+  FUEL,
+  POWERUP_CYCLE,
+  REALMS,
+  RELIC_IDS,
+  SHIP,
+  STRIP,
+  TAKEOFF_ROLL,
+  VORTEX_STYLES,
+  realmOf,
+} from './config.js';
 import { simulateFlight } from './physics.js';
 import { createRandom } from './random.js';
 
@@ -35,8 +50,24 @@ function distToStrip(x, y) {
 // exactly — reachable by construction, not by luck.
 const snapLaunch = (v, base) => base + Math.round((v - base) / 0.05) * 0.05;
 
-function makeVortexes(rng, level) {
-  const count = Math.min(2 + (level - 1), 5);
+/** Obstacle counts per stage (1-based). The boss stage is gentler on
+ * vortexes — the Thunderhead itself is the threat. */
+function stageCounts(stage) {
+  if (stage === BOSS_STAGE) {
+    return { vortexes: 3, storms: 1, turbulence: 1, birds: 2, stars: 3, rings: 2 };
+  }
+  const realm = realmOf(stage);
+  return {
+    vortexes: Math.min(2 + realm + (stage % 2 === 0 ? 1 : 0), 5),
+    storms: Math.min(Math.max(stage - 2, 0), 4),
+    turbulence: realm === 0 ? 0 : realm === 1 ? 1 : 2,
+    birds: Math.min(Math.max(stage - 1, 0), 4),
+    stars: Math.min(2 + stage, 6),
+    rings: stage === 1 ? 1 : 2,
+  };
+}
+
+function makeVortexes(rng, stage, count) {
   const vortexes = [];
   let tries = 0;
   while (vortexes.length < count && tries < 400) {
@@ -68,28 +99,27 @@ function makeVortexes(rng, level) {
   return vortexes;
 }
 
-function makeStars(rng, level, simLevel) {
-  const count = Math.min(2 + level, 6);
+function makeStars(rng, stage, count, simLevel, speed) {
   const stars = [];
   let tries = 0;
   while (stars.length < count && tries < 300) {
     tries += 1;
     // A random takeoff from the end of the runway, flown forward: the star
     // goes on its path. The flight is simulated with the FULL physics
-    // (storm cells, birds, turbulence included), so a star never lands on
-    // a path a storm or a bird actually blocks. The launch is snapped to
+    // (storm cells, birds, turbulence, boss included), so a star never lands
+    // on a path a storm or a bird actually blocks. The launch is snapped to
     // the 0.05 grid the preview searches, so the path is reproducible.
     const angle = snapLaunch(rng.range(-1.15, 0.25), -1.15);
     const power = snapLaunch(rng.range(0.45, 1), 0.45);
-    const vx = Math.cos(angle) * power * 780;
-    const vy = Math.sin(angle) * power * 780;
+    const vx = Math.cos(angle) * power * speed;
+    const vy = Math.sin(angle) * power * speed;
     const { points: path } = simulateFlight(simLevel, FLIGHT_START.x, FLIGHT_START.y, vx, vy, 150, 0, false);
     if (path.length < 30) continue;
     // From the second star on, prefer a path that ALSO passes near the
     // star placed just before it: stars then form a chain along one flight
     // corridor, so a single good takeoff can bank several stars in sequence
-    // instead of one. (A single star per flight cannot pay for 8 levels on
-    // 3 run-wide lives — that was the v1 wall.) The band is 70px, not the
+    // instead of one. (A single star per flight cannot pay for a campaign
+    // on 3 run-wide lives — that was the v1 wall.) The band is 70px, not the
     // 26px pickup range: a tighter band was tried and made things worse —
     // it forced stars onto one narrow path and left some unreachable.
     if (stars.length > 0) {
@@ -114,8 +144,8 @@ function makeStars(rng, level, simLevel) {
     fbTries += 1;
     const angle = snapLaunch(rng.range(-1.15, 0.25), -1.15);
     const power = snapLaunch(rng.range(0.45, 1), 0.45);
-    const vx = Math.cos(angle) * power * 780;
-    const vy = Math.sin(angle) * power * 780;
+    const vx = Math.cos(angle) * power * speed;
+    const vy = Math.sin(angle) * power * speed;
     const { points: path } = simulateFlight(simLevel, FLIGHT_START.x, FLIGHT_START.y, vx, vy, 150, 0, false);
     if (path.length < 30) continue;
     const at = path[Math.floor(rng.range(0.25, 0.85) * path.length)];
@@ -133,8 +163,8 @@ function makeStars(rng, level, simLevel) {
     let longest = null;
     for (let a = -1.15; a <= 1.151; a += 0.05) {
       for (let p = 0.45; p <= 1.001; p += 0.05) {
-        const vx = Math.cos(a) * p * 780;
-        const vy = Math.sin(a) * p * 780;
+        const vx = Math.cos(a) * p * speed;
+        const vy = Math.sin(a) * p * speed;
         const { points: path } = simulateFlight(simLevel, FLIGHT_START.x, FLIGHT_START.y, vx, vy, 150, 0, false);
         if (!longest || path.length > longest.length) longest = path;
       }
@@ -146,8 +176,7 @@ function makeStars(rng, level, simLevel) {
   return stars;
 }
 
-function makeStormCells(rng, level, vortexes) {
-  const count = Math.min(Math.max(level - 1, 0), 4);
+function makeStormCells(rng, stage, count, vortexes) {
   const storms = [];
   let tries = 0;
   while (storms.length < count && tries < 200) {
@@ -185,8 +214,7 @@ function makeStormCells(rng, level, vortexes) {
   return storms;
 }
 
-function makeTurbulence(rng, level, vortexes) {
-  const count = level < 3 ? 0 : level < 6 ? 1 : 2;
+function makeTurbulence(rng, stage, count, vortexes) {
   const zones = [];
   let tries = 0;
   while (zones.length < count && tries < 100) {
@@ -204,8 +232,7 @@ function makeTurbulence(rng, level, vortexes) {
   return zones;
 }
 
-function makeBirds(rng, level) {
-  const count = Math.min(Math.max(level - 1, 0), 4);
+function makeBirds(rng, count) {
   const birds = [];
   for (let i = 0; i < count; i += 1) {
     birds.push({
@@ -222,21 +249,100 @@ function makeBirds(rng, level) {
   return birds;
 }
 
+/** The Thunderhead: drift phases and the lightning columns. The boss
+ * drifts on two slow sines (a pure function of stage time) and throws a
+ * bolt every BOSS.boltPeriod seconds from BOSS.boltFirst, each into one of
+ * four seeded columns that never cover the runway or the strip. */
+function makeBoss(rng) {
+  const columns = [];
+  let tries = 0;
+  while (columns.length < 4 && tries < 200) {
+    tries += 1;
+    const x = rng.range(320, 940);
+    if (columns.some((c) => Math.abs(c - x) < 150)) continue;
+    columns.push(x);
+  }
+  columns.sort((a, b) => a - b);
+  return {
+    phaseX: rng.range(0, Math.PI * 2),
+    phaseY: rng.range(0, Math.PI * 2),
+    columns: columns.length === 4 ? columns : [350, 520, 690, 860],
+  };
+}
+
+/**
+ * Boost rings: golden rings on star-collecting flight paths, early in the
+ * flight (steps 15-40). A ring never costs a detour — it rides along on a
+ * star run — and a ring grabbed early still has most of the flight left to
+ * spend its fuel on. Same placement rule as the power-ups.
+ */
+function makeRings(rng, stage, count, simLevel, stars, storms, speed) {
+  const rings = [];
+  // First pass: flight paths that collect at least one star (full physics,
+  // so a ring never sits on a path a storm actually blocks).
+  const starPaths = [];
+  for (let a = -1.15; a <= 1.151; a += 0.1) {
+    for (let p = 0.45; p <= 1.001; p += 0.1) {
+      const vx = Math.cos(a) * p * speed;
+      const vy = Math.sin(a) * p * speed;
+      const { points: path } = simulateFlight(simLevel, FLIGHT_START.x, FLIGHT_START.y, vx, vy, 150, 0, false);
+      let hits = 0;
+      for (const pt of path) {
+        for (const s of stars) {
+          if (dist(pt.x, pt.y, s.x, s.y) < 30) hits += 1;
+        }
+      }
+      if (hits >= 1) starPaths.push(path);
+    }
+  }
+  let tries = 0;
+  while (rings.length < count && tries < 300) {
+    tries += 1;
+    let path;
+    let step;
+    if (starPaths.length > 0) {
+      path = starPaths[Math.floor(rng.next() * starPaths.length)];
+      step = 15 + Math.floor(rng.next() * 26);
+    } else {
+      const angle = snapLaunch(rng.range(-1.15, 0.25), -1.15);
+      const power = snapLaunch(rng.range(0.45, 1), 0.45);
+      const vx = Math.cos(angle) * power * speed;
+      const vy = Math.sin(angle) * power * speed;
+      const r = simulateFlight(simLevel, FLIGHT_START.x, FLIGHT_START.y, vx, vy, 150, 0, false);
+      path = r.points;
+      if (path.length < 30) continue;
+      step = Math.floor(rng.range(0.25, 0.85) * path.length);
+    }
+    if (step >= path.length) continue;
+    const at = path[step];
+    const x = at.x;
+    const y = at.y;
+    if (x < 60 || x > FIELD.width - 60 || y < 60 || y > 600) continue;
+    if (simLevel.vortexes.some((p) => dist(x, y, p.x, p.y) < p.r + 95)) continue;
+    if (stars.some((s) => dist(x, y, s.x, s.y) < 40)) continue;
+    if (rings.some((g) => dist(x, y, g.x, g.y) < 120)) continue;
+    if (storms.some((a) => dist(x, y, a.x, a.y) < a.r + 60)) continue;
+    if (dist(x, y, FLIGHT_START.x, FLIGHT_START.y) < 120) continue;
+    rings.push({ x, y, taken: false, phase: rng.range(0, Math.PI * 2) });
+  }
+  return rings;
+}
+
 /** One power-up per level. The orb sits ON a flight path that also collects
  * a star, early in the flight (steps 15-40): grabbing it costs the player
  * nothing extra — it rides along on a star run — and a magnet grabbed early
  * still has most of the flight left to pull stars. An orb off to the side,
  * or late in the flight, would be a dedicated detour that costs a life,
  * which is worse than no orb at all. Type cycles shield → magnet → life. */
-function makePowerups(rng, level, simLevel, stars, storms) {
-  const type = POWERUP_CYCLE[(level - 1) % POWERUP_CYCLE.length];
+function makePowerups(rng, stage, simLevel, stars, storms, speed) {
+  const type = POWERUP_CYCLE[(stage - 1) % POWERUP_CYCLE.length];
   // First pass: flight paths that collect at least one star (full physics,
   // so the orb never sits on a path a storm actually blocks).
   const starPaths = [];
   for (let a = -1.15; a <= 1.151; a += 0.1) {
     for (let p = 0.45; p <= 1.001; p += 0.1) {
-      const vx = Math.cos(a) * p * 780;
-      const vy = Math.sin(a) * p * 780;
+      const vx = Math.cos(a) * p * speed;
+      const vy = Math.sin(a) * p * speed;
       const { points: path } = simulateFlight(simLevel, FLIGHT_START.x, FLIGHT_START.y, vx, vy, 150, 0, false);
       let hits = 0;
       for (const pt of path) {
@@ -258,8 +364,8 @@ function makePowerups(rng, level, simLevel, stars, storms) {
     } else {
       const angle = snapLaunch(rng.range(-1.15, 0.25), -1.15);
       const power = snapLaunch(rng.range(0.45, 1), 0.45);
-      const vx = Math.cos(angle) * power * 780;
-      const vy = Math.sin(angle) * power * 780;
+      const vx = Math.cos(angle) * power * speed;
+      const vy = Math.sin(angle) * power * speed;
       const r = simulateFlight(simLevel, FLIGHT_START.x, FLIGHT_START.y, vx, vy, 150, 0, false);
       path = r.points;
       if (path.length < 30) continue;
@@ -297,7 +403,8 @@ function makePowerups(rng, level, simLevel, stars, storms) {
  * each a real simulated flight (same physics as the player's), with the
  * stars that flight passes counted. The rival plays the paths back in
  * order, pausing to "aim" between them; its progress is the stars it
- * banks. Paths are sampled every 2 steps to keep them small.
+ * banks. Paths are sampled every 2 steps to keep them small. Rivals fly
+ * the base speed (they hold no relics).
  */
 function makeRivalPlan(rng, level) {
   const paths = [];
@@ -306,8 +413,8 @@ function makeRivalPlan(rng, level) {
     tries += 1;
     const angle = rng.range(-1.15, 0.25);
     const power = rng.range(0.5, 1);
-    const vx = Math.cos(angle) * power * 780;
-    const vy = Math.sin(angle) * power * 780;
+    const vx = Math.cos(angle) * power * SHIP.maxSpeed;
+    const vy = Math.sin(angle) * power * SHIP.maxSpeed;
     const { points: path } = simulateFlight(level, FLIGHT_START.x, FLIGHT_START.y, vx, vy, 200, 0);
     if (path.length < 25) continue;
     // Stars this flight passes (before any crash point).
@@ -335,20 +442,49 @@ function makeRivalPlan(rng, level) {
   return { paths, aimPause: rng.range(1.8, 3.2) };
 }
 
-/** Build level `level` (1-based) from a seeded generator. */
-export function generateLevel(rng, level) {
-  const vortexes = makeVortexes(rng, level);
+/**
+ * Build stage `stage` (1-based) from a seeded generator.
+ * opts: { maxSpeed (relic-adjusted launch speed), windFactor (Storm Hull) }.
+ */
+export function generateLevel(rng, stage, opts = {}) {
+  const speed = opts.maxSpeed ?? SHIP.maxSpeed;
+  const windFactor = opts.windFactor ?? 1;
+  const counts = stageCounts(stage);
+  const realm = REALMS[realmOf(stage)];
+  const vortexes = makeVortexes(rng, stage, counts.vortexes);
   // Storm cells, turbulence and birds come before the stars: star and
   // power-up placement simulates the full physics (storms, birds and the
   // wobble included), so nothing is placed on a path a bird or a storm
   // actually blocks.
-  const storms = makeStormCells(rng, level, vortexes);
-  const turbulence = makeTurbulence(rng, level, vortexes);
-  const birds = makeBirds(rng, level);
-  const simLevel = { vortexes, storms, turbulence, birds };
-  const stars = makeStars(rng, level, simLevel);
-  const powerups = makePowerups(rng, level, simLevel, stars, storms);
-  const built = { level, vortexes, stars, storms, turbulence, birds, powerups, start: { ...START } };
+  const storms = makeStormCells(rng, stage, counts.storms, vortexes);
+  const turbulence = makeTurbulence(rng, stage, counts.turbulence, vortexes);
+  const birds = makeBirds(rng, counts.birds);
+  // The boss comes before the stars too: star placement simulates the boss
+  // drifting and its bolts, so no star sits on a path the Thunderhead
+  // actually blocks.
+  const boss = stage === BOSS_STAGE ? makeBoss(rng) : null;
+  const simLevel = { vortexes, storms, turbulence, birds, boss, windFactor, fuelMax: FUEL.max, stageStartTime: 0 };
+  const stars = makeStars(rng, stage, counts.stars, simLevel, speed);
+  const rings = makeRings(rng, stage, counts.rings, simLevel, stars, storms, speed);
+  const powerups = makePowerups(rng, stage, simLevel, stars, storms, speed);
+  const built = {
+    stage,
+    level: stage,
+    realm: realmOf(stage),
+    palette: realm,
+    vortexes,
+    stars,
+    rings,
+    storms,
+    turbulence,
+    birds,
+    boss,
+    powerups,
+    windFactor,
+    fuelMax: FUEL.max,
+    stageStartTime: 0,
+    start: { ...START },
+  };
   // Rival plans are drawn from the same rng stream, after the level itself.
   built.rivals = [makeRivalPlan(rng, built), makeRivalPlan(rng, built)];
   return built;
@@ -360,9 +496,25 @@ export function generateLevel(rng, level) {
  * plan for their next level is built when they get there. Deterministic:
  * the same (seed, level, rival) always yields the same plan.
  */
-export function rivalPlanFor(seed, levelNum, rivalIdx) {
-  const level = generateLevel(createRandom((seed + levelNum * 1000003) >>> 0), levelNum);
+export function rivalPlanFor(seed, stageNum, rivalIdx) {
+  const level = generateLevel(createRandom((seed + stageNum * 1000003) >>> 0), stageNum);
   return level.rivals[rivalIdx];
+}
+
+/**
+ * Workshop offers: 3 distinct relics the player does not own yet, from a
+ * seeded shuffle. Deterministic: the same (seed, workshopIndex, owned)
+ * always yields the same offers.
+ */
+export function relicOffers(seed, workshopIndex, owned) {
+  const rng = createRandom((seed + 777000 + workshopIndex * 7919) >>> 0);
+  const pool = RELIC_IDS.filter((id) => !owned.includes(id));
+  // Fisher-Yates on the seeded stream.
+  for (let i = pool.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(rng.next() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, 3);
 }
 
 export const LAUNCH_PAD = START;

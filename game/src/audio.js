@@ -176,6 +176,32 @@ export function createAudio() {
       tone(660 * Math.pow(1.059463, step), 0.12, 'sine', 0.3);
       setTimeout(() => tone(990 * Math.pow(1.059463, step), 0.16, 'sine', 0.25), 70);
     },
+    /** A boost ring: a bright two-note chime, higher than a star. */
+    ring() {
+      tone(1175, 0.1, 'sine', 0.3);
+      setTimeout(() => tone(1568, 0.18, 'sine', 0.28), 60);
+    },
+    /** A relic picked in the workshop: a little fanfare. */
+    relic() {
+      [523, 659, 784, 1047, 1319].forEach((freq, i) => {
+        setTimeout(() => tone(freq, 0.18, 'triangle', 0.25), i * 80);
+      });
+    },
+    /** The Thunderhead's roar: low noise with a deep falling tone. */
+    roar() {
+      noise(1.2, 0.5, 400, 90);
+      tone(70, 1.1, 'sawtooth', 0.3, 45);
+    },
+    /** A lightning strike: a sharp crack over a deep boom. */
+    bolt() {
+      noise(0.12, 0.6, 4000, 800);
+      tone(55, 0.7, 'sine', 0.5, 35);
+    },
+    /** The tank running dry: two low descending notes. */
+    fuelEmpty() {
+      tone(330, 0.2, 'square', 0.15, 220);
+      setTimeout(() => tone(220, 0.3, 'square', 0.15, 150), 120);
+    },
     powerup() {
       [523, 659, 784].forEach((freq, i) => {
         setTimeout(() => tone(freq, 0.14, 'triangle', 0.25), i * 70);

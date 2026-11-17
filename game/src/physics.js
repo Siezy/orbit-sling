@@ -4,12 +4,17 @@
 //
 // The wind: storm vortexes pull the plane (gravity), storm cells orbit them,
 // turbulence zones wobble the plane, birds slow it, the ground ends a
-// flight — except the landing strip, which ends it in glory.
+// flight — except the landing strip, which ends it in glory. Fuel drains in
+// the air; boost rings refill it and kick the plane faster. On the boss
+// stage the Thunderhead drifts across the field and throws lightning on a
+// fixed schedule.
 
 import {
   BIRD_COOLDOWN,
   BIRD_SLOW,
+  BOSS,
   FIELD,
+  FUEL,
   GRAZE_BAND,
   GRAVITY_G,
   GROUND_LINE,
@@ -25,8 +30,9 @@ function dist(x1, y1, x2, y2) {
   return Math.hypot(x1 - x2, y1 - y2);
 }
 
-/** Acceleration at (x, y) from every storm vortex's wind. */
-export function gravityAt(vortexes, x, y) {
+/** Acceleration at (x, y) from every storm vortex's wind. `windFactor`
+ * scales the wind (the Storm Hull relic weakens it). */
+export function gravityAt(vortexes, x, y, windFactor = 1) {
   let ax = 0;
   let ay = 0;
   for (const p of vortexes) {
@@ -38,7 +44,7 @@ export function gravityAt(vortexes, x, y) {
     ax += (a * dx) / d;
     ay += (a * dy) / d;
   }
-  return { ax, ay };
+  return { ax: ax * windFactor, ay: ay * windFactor };
 }
 
 function hitsVortex(vortexes, x, y) {
@@ -68,6 +74,47 @@ export function birdPos(bird, t) {
 
 function inStrip(x, y) {
   return x >= STRIP.x0 && x <= STRIP.x1 && y >= STRIP.y0 && y <= STRIP.y1;
+}
+
+/**
+ * The Thunderhead's position at stage time `t` (seconds since the boss
+ * stage started): a slow drift on two sines. A pure function, so the
+ * preview, the generator and the live game all agree where it is.
+ */
+export function bossAt(level, stageTime) {
+  const b = level.boss;
+  return {
+    x: 640 + Math.sin((stageTime * Math.PI * 2) / BOSS.driftPeriodX + b.phaseX) * BOSS.driftX,
+    y: 300 + Math.sin((stageTime * Math.PI * 2) / BOSS.driftPeriodY + b.phaseY) * BOSS.driftY,
+  };
+}
+
+/**
+ * The lightning state at stage time `t`: which column (if any) is being
+ * telegraphed, and which column (if any) is striking right now. Bolts
+ * strike every BOSS.boltPeriod seconds from BOSS.boltFirst, cycling the
+ * seeded columns. A pure function of stage time.
+ */
+export function boltState(level, stageTime) {
+  // The first telegraph starts 1.2 s before the first bolt, so the early
+  // return allows that window in.
+  if (!level.boss || stageTime < BOSS.boltFirst - BOSS.boltTelegraph) return { telegraph: null, striking: null };
+  const k = Math.floor((stageTime - BOSS.boltFirst) / BOSS.boltPeriod);
+  const strikeT = BOSS.boltFirst + k * BOSS.boltPeriod;
+  const col = level.boss.columns[k % level.boss.columns.length];
+  if (stageTime >= strikeT && stageTime < strikeT + BOSS.boltFlash) {
+    return { telegraph: null, striking: col };
+  }
+  // The telegraph warns of the NEXT strike (1.2 s ahead), so the player can
+  // move out of the column. Checking the last strike's window was wrong:
+  // after the first bolt that window is always in the past, so the
+  // telegraph never showed again and the lightning was not dodgeable.
+  const nextT = strikeT + BOSS.boltPeriod;
+  const nextCol = level.boss.columns[(k + 1) % level.boss.columns.length];
+  if (stageTime >= nextT - BOSS.boltTelegraph && stageTime < nextT) {
+    return { telegraph: nextCol, striking: null };
+  }
+  return { telegraph: null, striking: null };
 }
 
 /**
@@ -110,34 +157,45 @@ export function updateStormCells(level, dt) {
 
 /**
  * Fly a point forward with the storm cells moving alongside it, and return
- * the flight: its points, how many stars the path collects, and whether it
- * lands. This is the trajectory preview: it is the same physics the live
- * game runs (storms first, then the plane, one fixed step at a time), so
- * what the preview shows is what happens. When `collect` is true the stars
- * are collected on an internal clone, so a launch that banks the last star
- * and lands shows the landing — the preview then tells the player "this
- * takeoff wins the level". The last point carries `hit` ('vortex', 'storm',
- * 'ground', 'lost' or 'land') when the flight ends that way, and null
+ * the flight: its points, how many stars (and rings) the path collects, and
+ * whether it lands. This is the trajectory preview: it is the same physics
+ * the live game runs (storms first, then the plane, one fixed step at a
+ * time), so what the preview shows is what happens. When `collect` is true
+ * the stars and rings are collected on an internal clone, so a launch that
+ * banks the last star and lands shows the landing — the preview then tells
+ * the player "this takeoff wins the level". Fuel drains in the air and a
+ * ring refills it and boosts the plane, exactly as in the live game. The
+ * last point carries `hit` ('vortex', 'storm', 'ground', 'lost', 'fuel',
+ * 'boss', 'bolt' or 'land') when the flight ends that way, and null
  * otherwise.
  */
-export function simulateFlight(level, x, y, vx, vy, steps, time0 = 0, collect = false) {
+export function simulateFlight(level, x, y, vx, vy, steps, time0 = 0, collect = false, fuel0 = null) {
   const points = [{ x, y, hit: null }];
   // Clone the moving hazards so the real ones are untouched.
   const storms = level.storms.map((a) => ({ ...a }));
   const birds = level.birds.map((b) => ({ ...b }));
   const stars = collect ? level.stars.map((s) => ({ ...s })) : null;
+  const rings = collect ? (level.rings ?? []).map((r) => ({ ...r })) : null;
   const simLevel = {
     vortexes: level.vortexes,
     storms,
     turbulence: level.turbulence,
     birds,
+    boss: level.boss,
+    windFactor: level.windFactor ?? 1,
+    stageStartTime: level.stageStartTime ?? 0,
   };
+  const maxFuel = level.fuelMax ?? FUEL.max;
+  const ringRefill = level.ringRefill ?? FUEL.ringRefill;
+  const ringBoost = level.ringBoost ?? FUEL.ringBoost;
+  let fuel = fuel0 ?? maxFuel;
   let px = x;
   let py = y;
   let pvx = vx;
   let pvy = vy;
   let time = time0;
   let landed = false;
+  let fuelOut = false;
   for (let i = 0; i < steps; i += 1) {
     time += STEP;
     updateStormCells(simLevel, STEP);
@@ -148,7 +206,19 @@ export function simulateFlight(level, x, y, vx, vy, steps, time0 = 0, collect = 
     py = ship.y;
     pvx = ship.vx;
     pvy = ship.vy;
+    // Fuel drains in the air; a ring refills it and boosts the plane.
+    fuel -= FUEL.drainPerSec * STEP;
     if (collect) {
+      for (const r of rings) {
+        if (!r.taken && dist(px, py, r.x, r.y) < FUEL.ringRadius) {
+          r.taken = true;
+          fuel = Math.min(fuel + ringRefill, maxFuel);
+          const sp = Math.hypot(pvx, pvy) || 1;
+          const boosted = Math.min(sp * ringBoost, 2400);
+          pvx = (pvx / sp) * boosted;
+          pvy = (pvy / sp) * boosted;
+        }
+      }
       for (const s of stars) {
         // 30px pickup: generous enough that a turbulence wobble or a bird
         // nudge does not make a star on a flown corridor unreachable.
@@ -163,8 +233,11 @@ export function simulateFlight(level, x, y, vx, vy, steps, time0 = 0, collect = 
       } else if (ev.type === 'bird' || ev.type === 'bounce') {
         hit = null; // a scare, not the end of the flight
       } else {
-        hit = ev.type; // vortex, storm, ground, lost
+        hit = ev.type; // vortex, storm, ground, lost, boss, bolt
       }
+    } else if (fuel <= 0) {
+      hit = 'fuel';
+      fuelOut = true;
     }
     points.push({ x: px, y: py, hit });
     if (hit) break;
@@ -172,14 +245,17 @@ export function simulateFlight(level, x, y, vx, vy, steps, time0 = 0, collect = 
   return {
     points,
     stars: collect ? stars.filter((s) => s.taken).length : 0,
+    rings: collect ? rings.filter((r) => r.taken).length : 0,
     land: landed,
+    fuelOut,
+    fuelLeft: fuel,
   };
 }
 
 /**
  * Advance the plane one fixed step. Returns null while it flies, or the
  * event that ended (or shook) the flight:
- * - { type: 'vortex' | 'storm' | 'ground' | 'lost' } — the flight is over.
+ * - { type: 'vortex' | 'storm' | 'ground' | 'lost' | 'boss' | 'bolt' } — the flight is over.
  * - { type: 'land' } — the plane landed on the strip (only when `canLand`).
  * - { type: 'bounce' } — the plane touched the strip too fast or too early
  *   and bounced back up; the flight continues.
@@ -187,7 +263,7 @@ export function simulateFlight(level, x, y, vx, vy, steps, time0 = 0, collect = 
  *   applied here); the flight continues.
  */
 export function advanceShip(level, ship, dt, time, canLand = false) {
-  let { ax, ay } = gravityAt(level.vortexes, ship.x, ship.y);
+  let { ax, ay } = gravityAt(level.vortexes, ship.x, ship.y, level.windFactor ?? 1);
   // The landing beacon (ILS): once every star is collected, a gentle pull
   // toward the strip centre guides the final approach home. It only bends
   // the flight — the player still has to fly a takeoff that gets near the
@@ -245,6 +321,17 @@ export function advanceShip(level, ship, dt, time, canLand = false) {
   for (const a of level.storms) {
     if (dist(ship.x, ship.y, a.x, a.y) < a.r + 7) return { type: 'storm', storm: a };
   }
+  // The Thunderhead: touching the boss cloud, or standing in a lightning
+  // column when a bolt strikes, ends the flight.
+  if (level.boss) {
+    const stageTime = time - (level.stageStartTime ?? 0);
+    const bp = bossAt(level, stageTime);
+    if (dist(ship.x, ship.y, bp.x, bp.y) < BOSS.radius + 6) return { type: 'boss' };
+    const { striking } = boltState(level, stageTime);
+    if (striking != null && Math.abs(ship.x - striking) < BOSS.boltWidth / 2 && ship.y < GROUND_LINE - 10) {
+      return { type: 'bolt' };
+    }
+  }
   if (ship.y > GROUND_LINE) return { type: 'ground' };
   if (outOfWorld(ship.x, ship.y)) return { type: 'lost' };
   for (const b of level.birds ?? []) {
@@ -270,6 +357,14 @@ export function starAt(level, ship) {
   return null;
 }
 
+/** The first uncollected boost ring within pickup range, if any. */
+export function ringAt(level, ship) {
+  for (const r of level.rings ?? []) {
+    if (!r.taken && dist(ship.x, ship.y, r.x, r.y) < FUEL.ringRadius) return r;
+  }
+  return null;
+}
+
 /** The first uncollected power-up within pickup range of the plane, if any. */
 export function powerupAt(level, ship) {
   for (const p of level.powerups ?? []) {
@@ -283,13 +378,13 @@ export function powerupAt(level, ship) {
  * toward it — the magnet widens the corridor a flight can sweep, so one
  * good takeoff can bank several stars instead of one.
  */
-export function pullStars(level, ship, dt) {
+export function pullStars(level, ship, dt, radius = MAGNET_RADIUS) {
   for (const s of level.stars) {
     if (s.taken) continue;
     const dx = ship.x - s.x;
     const dy = ship.y - s.y;
     const d = Math.hypot(dx, dy);
-    if (d < MAGNET_RADIUS && d > 20) {
+    if (d < radius && d > 20) {
       const step = Math.min(MAGNET_PULL * dt, d - 20);
       s.x += (dx / d) * step;
       s.y += (dy / d) * step;
